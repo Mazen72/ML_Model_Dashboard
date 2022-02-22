@@ -1,6 +1,6 @@
 # ML_Model_Dashboard
 
-this is a Web Dashboard for visualizing the data got from ML Model for predicting the energy transistion between countries based on historical data    
+this is a Web Dashboard for visualizing the data got from ML Model for predicting the energy transition between countries based on historical data    
 note: data is not provided in the repository because it is private
 
 Energy flow between countries
