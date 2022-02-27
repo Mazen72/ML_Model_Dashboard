@@ -16,4 +16,3 @@ Energy produced from different types of energy planets ( EX: Wind , Solar ..etc 
 
  
  
-  
