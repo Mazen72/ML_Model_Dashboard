@@ -14,5 +14,5 @@ Energy produced from different types of energy planets ( EX: Wind , Solar ..etc 
 ![alt text](https://github.com/Mazen72/ML_Model_Dashboard/blob/master/img3.png)
 
 
- 
+   
   
