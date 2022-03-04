@@ -4,8 +4,6 @@ this is a Web Dashboard for visualizing the data got from ML Model for predictin
 note: data is not provided in the repository because it is private
 
 
-![video](https://drive.google.com/uc?export=view&id=1tzTG0dAgnsEx7fwC5ePx1mromxNxQLfP)
-
 Energy flow between countries
 ![alt text](https://github.com/Mazen72/ML_Model_Dashboard/blob/master/img1.png)
 
