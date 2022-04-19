@@ -5,47 +5,93 @@ from dash import html
 import dash_bootstrap_components as dbc
 from dash.dependencies import Input,Output,State,MATCH,ALL
 import pandas as pd
-import pickle as pkl
 import base64
 import plotly.express as px
 import plotly.graph_objects as go
 from flask import Flask
-from dash_extensions.snippets import send_data_frame
-from dash_extensions import Download
-import flow_page
-import gen_by_type
-import price_page
-import capacity_page
-import net_import
+from dash.exceptions import PreventUpdate
+from collections import OrderedDict
+import dash_daq as daq
+import configparser
+import json
+import os
+#import RPi.GPIO as GPIO
+#import dash_auth
+import redis
 
 
+redis_data = redis.Redis('localhost')
+redis_data.set("power","")
+redis_data.set("presoak","")
+redis_data.set("soap","")
+redis_data.set("degreaser","")
+redis_data.set("rinse","")
+redis_data.set("wax","")
+redis_data.set("heater","")
 
-# first of all i imported all libraries needed for dash , plotly , and all other python libraries that helps in data analysis
-# Dash applications are web servers running Flask on the backend and communicating JSON packets over HTTP requests with the client ( web browser ).
-# dash app consists of 2 main parts : Layout and Callbacks
-# best video that explains dash app structure and functionality in link bellow
-# https://www.youtube.com/watch?v=hSPmj7mK6ng
-# and the link bellow shows how to use plotly library for data visualization in dash apps
-# https://www.youtube.com/watch?v=_b2KXL0wHQg
-# also the video bellow shows how to style your app using dash bootstrap for responsive styling
-# https://www.youtube.com/watch?v=vqVwpL4bGKY
-# this dash app consist of 6 files where 5 files are the layout of the 5 pages of the app ( flow_page,gen_by_type,price_page,capacity_page,net_import)
-# and 1 file (app.py) that has all the callback functions that updates the 5 pages layout
-
-# note that you can use css styles without writing css by using style options on dash components but if you need so customized styling use css
-# i normally use 70% of styling with style options on dash components and 30% with pure css
+data_dict={'power':False,'presoak':False,'soap':False,'degreaser':False,'rinse':False,'wax':False,'heater':False}
 
 
+'''
+power_relay_GBIO=17  # 11 on the board
+presoak_relay_GBIO=18  # 12 on the board
+soap_relay_GBIO=27  # 13 on the board
+degreaser_relay_GBIO=22  # 15 on the board
+rinse_relay_GBIO=23  # 16 on the board
+wax_relay_GBIO=24  # 18 on the board
+heater_relay_GBIO=10  # 19 on the board
+
+GPIO.setmode(GPIO.BCM)
+GPIO.setup(power_relay_GBIO,GPIO.OUT)
+GPIO.setup(presoak_relay_GBIO,GPIO.OUT)
+GPIO.setup(soap_relay_GBIO,GPIO.OUT)
+GPIO.setup(degreaser_relay_GBIO,GPIO.OUT)
+GPIO.setup(rinse_relay_GBIO,GPIO.OUT)
+GPIO.setup(wax_relay_GBIO,GPIO.OUT)
+GPIO.setup(heater_relay_GBIO,GPIO.OUT)
+'''
+
+myfolder=os.path.dirname(os.path.abspath(__file__))
+contact_file=os.path.join(myfolder,'contact_info.json')
+logo_file=os.path.join(myfolder,'logo.json')
+csv_file=os.path.join(myfolder,'colors.csv')
+config_file=os.path.join(myfolder,'config.txt')
+
+with open(contact_file, 'r') as openfile:
+    # Reading from json file
+    contact_info_dict = json.load(openfile)
 
 
-# here im defining a Flask server object
-#__name__ is just a convenient way to get the import name of the place the app is defined.
-# Flask uses the import name to know where to look up resources, templates, static files, instance folder, etc.
+with open(logo_file, 'r') as openfile:
+    # Reading from json file
+    logo_content = json.load(openfile)
+
+logo_content=logo_content['content']
+
+config = configparser.ConfigParser()
+config.read(config_file)
+
+system_mode=config.get('system-mode', 'mode')
+'''
+data = {'Color': ['Current', 'Default'],'Main Background': ['#0f2937','#0f2937'],'Header Background': ['#20374c','#20374c']
+    ,'Main Header Text': ['white','white'],'Containers Background': ['#20374c','#20374c'],
+        'Containers Label': ['white','white'] , 'Buttons': ['#3d9be7','#3d9be7'], 'Buttons Text': ['white','white']
+    , 'Leds Off State': ['#A9A9A9','#A9A9A9'] , 'Pre-Soak On State': ['#FD1C03','#FD1C03'] ,'Soap On State': ['#28E7FF','#28E7FF'] ,
+      'Degreaser On State': ['#FF6700','#FF6700'] , 'Rinse On State': ['#FFFF33','#FFFF33'] ,'Wax On State': ['#16F529','#16F529'],
+    'Heater On State': ['#FFFFFF', '#FFFFFF'], 'Pressure Washer On State': ['#39FF14', '#39FF14'],
+    'Pressure Washer Off State': ['darkgrey', 'darkgrey'],
+    'Timer Numbers': ['#42C4F7', '#42C4F7'], 'Timer Background': ['#0f2937', '#0f2937']
+        }
+'''
+# Create DataFrame
+#df = pd.DataFrame(data)
+#df.to_csv(csv_file)
+df_colors = pd.read_csv(csv_file)  # get coordinates data
+components_colors = df_colors.to_dict('list')  # convert it to dictionery to be used easily
+#print(components_colors)
+
 server = Flask(__name__)
 
-# her im defining dash app object
-# server : server used in backend
-# meta_tags : some app configerations like the initial width of app screen
 app = dash.Dash(
     __name__,server=server,
     meta_tags=[
@@ -59,807 +105,1371 @@ app = dash.Dash(
     ] ,
 )
 
-# telling the app that its okay if the components of a certain callback doesnt exist on the current page
-# bellow is link of how to create multi page dash app
-# https://dash.plotly.com/urls
+#VALID_USERNAME_PASSWORD_PAIRS = {'user': 'pass'}
+#auth = dash_auth.BasicAuth(app,VALID_USERNAME_PASSWORD_PAIRS)
+app.title='Truck Washer Dashboard'
 app.config.suppress_callback_exceptions = True
+#app._favicon=('/home/mazen/PycharmProjects/Truck-Pressure-Washer/assets/favicon.ico')
 
-# setting different font sizes as variables to be used later
-# 'vh' stands for browser viewport height
-# Hence, setting an element to value of 50vh means that the element will have size 50% of the viewport size
-text_font_size='1.7vh'
+text_font_size='1.6vh'
 navbar_font_size='2vh'
-header_font_size='2vh'
+header_font_size='2.2vh'
+indicator_size=40
 
-# Opening the image file , reading the image data and encoding it in base64 using the base64 module in Python
-# this way it is able to be used in html.img component
-# you can change the image by only change the name in open('Logo.png', 'rb')
-encoded = base64.b64encode(open('Logo.png', 'rb').read())
+idle_state='idle'
+washing_state='washing'
+finished_washing_state='finished_washing'
+system_state=idle_state
+start_time=0
+seconds=0
+minutes=0
+time_passed='00:00'
 
-# using the encoded image in html.img component and setting height , width , margin of the image
-# src : https://dash.plotly.com/dash-html-components/img
-logo_img=html.Img(src='data:image/jpg;base64,{}'.format(encoded.decode()), id='logo_img', height='70vh',
-                  style=dict(marginLeft='1vh'))
+on='#39FF14'
+off='red'
 
+#encoded = base64.b64encode(open('demo.jpg', 'rb').read())
+#'data:image/jpg;base64,{}'.format(encoded.decode())
+logo_img=html.Img(src=logo_content, id='logo_img', height='',width='',className='mylogo',
+                  style=dict(marginLeft=''))
+logo_img_div=html.Div(logo_img,id='logo_img_div',style=dict(width='100%',
+                     display= 'flex', alignItems= 'center', justifyContent= 'center'))
 # setting the size and spacing of logo_img using dash bootstrap
 # more info on dash bootstrap layout : https://dash-bootstrap-components.opensource.faculty.ai/docs/components/layout/
 db_logo_img=dbc.Col([ logo_img] ,
         xs=dict(size=2,offset=0), sm=dict(size=2,offset=0),
-        md=dict(size=1,offset=0), lg=dict(size=1,offset=0), xl=dict(size=1,offset=0))
+        md=dict(size=2,offset=0), lg=dict(size=3,offset=0), xl=dict(size=3,offset=0))
 
-# adding the header text component which is a text inside an html div
-# note that all parameters in style dict are css styling of the component
-# html.Div source : https://dash.plotly.com/dash-html-components/div
-header_text=html.Div('Data Visualization Dashboard',style=dict(color='white',
-                     fontWeight='bold',fontSize='2.8vh',marginTop='1vh',marginLeft='1.5vh'))
+header_text=html.Div('Truck Pressure Washer System',id='main_header_text',style=dict(color=components_colors['Main Header Text'][0],
+                     fontWeight='bold',fontSize='2.8vh',marginTop='',marginLeft='',width='100%',paddingTop='1vh',paddingBottom='1vh',
+                     display= 'flex', alignItems= 'center', justifyContent= 'center'))
+
+
+
 
 # setting the size and spacing of header_text using dash bootstrap
 db_header_text=  dbc.Col([ header_text] ,
-        xs=dict(size=10,offset=0), sm=dict(size=10,offset=0),
-        md=dict(size=10,offset=0), lg=dict(size=10,offset=0), xl=dict(size=10,offset=0))
+        xs=dict(size=10,offset=1), sm=dict(size=10,offset=1),
+        md=dict(size=8,offset=2), lg=dict(size=6,offset=3), xl=dict(size=6,offset=3))
+
+presoaking_text = html.Div(html.H1('Presoaking',className='card-header',
+                                style=dict(fontWeight='bold', color='white',
+                                           marginTop='')),
+                        style=dict(display='inline-block', marginLeft='', textAlign="center"))
+
+#        label=dict(label='PreSoaking',style=dict(color='white',fontSize=header_font_size,fontWeight='bold')),
+
+leds_theme = {
+    'dark': True,
+
+    'secondary': components_colors['Leds Off State'][0]
+}
+
+presoaking_indicator=html.Div(daq.Indicator(className='led',
+        id='presoaking_indicator',
+label=dict(label='Pre-Soak',style=dict(color=components_colors['Containers Label'][0],fontWeight='bold')),
+    color=components_colors['Pre-Soak On State'][0],value=False,size=indicator_size
+    )  , style=dict(width='100%',
+                     display= 'flex', alignItems= 'center', justifyContent= 'center')
+                              )
+presoaking_indicator_div= html.Div(id='presoaking_indicator_div', children=[
+    daq.DarkThemeProvider(theme=leds_theme, children=presoaking_indicator)],
+                          style=dict(width='100%',display= 'flex', alignItems= 'center', justifyContent= 'center') )
+
+#style={'font-size': '12px', 'width': '140px', 'display': 'inline-block',
+# 'margin-bottom': '10px', 'margin-right': '5px', 'height':'37px', 'verticalAlign': 'top'}
+
+
+presoaking_button=html.Div([dbc.Button("On/Off",size='lg',outline=False, color="", className="me-1", n_clicks=0,id="presoaking_button"
+                            ,style=dict(fontWeight='bold',border='1px solid transparent',
+                                        backgroundColor=components_colors['Buttons'][0],
+                                        color=components_colors['Buttons Text'][0]
+                                        )
+                            )],style=dict(display=''))
 
 
 
-# using naviation bar to switch between pages
-# see example here : https://dash-bootstrap-components.opensource.faculty.ai/docs/components/nav/
-# note that i use external css to style this component you can find it in custom css file in assets folder
-# thats because styles of dash here are not enough
-navigation_header=dbc.Nav(
-    [
-        dbc.NavItem(dbc.NavLink("Flow", active='exact', href="/Flow",id='Flow',className="page-link",
-                                style=dict(fontSize=navbar_font_size,color='primary'))),
+presoaking_buttons_div=html.Div([presoaking_button,],
+                                style=dict(width='100%',
+                     display= 'flex', alignItems= 'center', justifyContent= 'center'))
 
-        dbc.NavItem(dbc.NavLink("Generation By Type", href="/Planets",active='exact',id='Planets',className="page-link",
-                                style=dict(fontSize=navbar_font_size,color='primary'))),
 
-        dbc.NavItem(dbc.NavLink("Power price", href="/price", active='exact', id='price',className="page-link",
-                                style=dict(fontSize=navbar_font_size,color='primary'))),
+soap_indicator=daq.Indicator(className='led',
+        id='soap_indicator',
+        label=dict(label='Soap',style=dict(color=components_colors['Containers Label'][0],fontWeight='bold')),
+    color=components_colors['Soap On State'][0],value=False,size=indicator_size
+    )
 
-        dbc.NavItem(dbc.NavLink("NetImport", href="/NetImport", active='exact', id='NetImport',className="page-link",
-                                 style=dict(fontSize=navbar_font_size,color='primary'))),
+soap_indicator_div= html.Div(id='soap_indicator_div', children=[
+    daq.DarkThemeProvider(theme=leds_theme, children=soap_indicator)],
+                          style=dict(width='100%',display= 'flex', alignItems= 'center', justifyContent= 'center') )
 
-        dbc.NavItem(dbc.NavLink("TransmisionCap", href="/TransmisionCap", active='exact', id='TransmisionCap',className="page-link",
-                                 style=dict(fontSize=navbar_font_size,color='primary')))
+soap_button=html.Div([dbc.Button("On/Off",size='lg',outline=False, color="primary", className="me-1", n_clicks=0,id="soap_button"
+                            ,style=dict(fontWeight='bold',border='1px solid transparent',
+                                        backgroundColor=components_colors['Buttons'][0],
+                                        color=components_colors['Buttons Text'][0]
+                                        )
+                            )],style=dict(display='inline-block'))
 
-    ],
-    pills=True,
+
+
+soap_buttons_div=html.Div([soap_button],
+                                style=dict(width='100%',
+                     display= 'flex', alignItems= 'center', justifyContent= 'center'))
+
+
+#D76428
+degreaser_indicator=daq.Indicator(className='led',
+        id='degreaser_indicator',
+        label=dict(label='Degreaser',style=dict(color=components_colors['Containers Label'][0],fontWeight='bold')),
+    color=components_colors['Degreaser On State'][0],value=False,size=indicator_size
+    )
+
+degreaser_indicator_div= html.Div(id='degreaser_indicator_div', children=[
+    daq.DarkThemeProvider(theme=leds_theme, children=degreaser_indicator)],
+                          style=dict(width='100%',display= 'flex', alignItems= 'center', justifyContent= 'center') )
+
+
+degreaser_button=html.Div([dbc.Button("On/Off",size='lg',outline=False, color="primary", className="me-1", n_clicks=0,id="degreaser_button"
+                            ,style=dict(fontWeight='bold',border='1px solid transparent',
+                                        backgroundColor=components_colors['Buttons'][0],
+                                        color=components_colors['Buttons Text'][0]
+                                        )
+                            )],style=dict(display='inline-block'))
+
+
+
+degreaser_buttons_div=html.Div([degreaser_button],
+                                style=dict(width='100%',
+                     display= 'flex', alignItems= 'center', justifyContent= 'center'))
+
+
+
+rinse_indicator=daq.Indicator(className='led',
+        id='rinse_indicator',
+        label=dict(label='Rinse',style=dict(color=components_colors['Containers Label'][0],fontWeight='bold')),
+    color=components_colors['Rinse On State'][0],value=False,size=indicator_size
+    )
+
+rinse_indicator_div= html.Div(id='rinse_indicator_div', children=[
+    daq.DarkThemeProvider(theme=leds_theme, children=rinse_indicator)],
+                          style=dict(width='100%',display= 'flex', alignItems= 'center', justifyContent= 'center') )
+
+rinse_button=html.Div([dbc.Button("On/Off",size='lg',outline=False, color="primary", className="me-1", n_clicks=0,id="rinse_button"
+                            ,style=dict(fontWeight='bold',border='1px solid transparent',
+                                        backgroundColor=components_colors['Buttons'][0],
+                                        color=components_colors['Buttons Text'][0]
+                                        )
+                            )],style=dict(display='inline-block'))
+
+
+rinse_buttons_div=html.Div([rinse_button],
+                                style=dict(width='100%',
+                     display= 'flex', alignItems= 'center', justifyContent= 'center'))
+
+
+wax_indicator=daq.Indicator(className='led',
+        id='wax_indicator',
+        label=dict(label='Wax',style=dict(color=components_colors['Containers Label'][0],fontWeight='bold')),
+    color=components_colors['Wax On State'][0],value=False,size=indicator_size
+    )
+
+wax_indicator_div= html.Div(id='wax_indicator_div', children=[
+    daq.DarkThemeProvider(theme=leds_theme, children=wax_indicator)],
+                          style=dict(width='100%',display= 'flex', alignItems= 'center', justifyContent= 'center')
+                          )
+
+wax_button=html.Div([dbc.Button("On/Off",size='lg',outline=False, color="primary", className="me-1", n_clicks=0,id="wax_button"
+                            ,style=dict(fontWeight='bold',border='1px solid transparent',
+                                        backgroundColor=components_colors['Buttons'][0],
+                                        color=components_colors['Buttons Text'][0]
+                                        )
+                            )],style=dict(display='inline-block'))
+
+
+wax_buttons_div=html.Div([wax_button],
+                                style=dict(width='100%',
+                     display= 'flex', alignItems= 'center', justifyContent= 'center'))
+
+
+
+heater_indicator=daq.Indicator(className='led',
+        id='heater_indicator',
+        label=dict(label='Heater',style=dict(color=components_colors['Containers Label'][0],fontWeight='bold')),
+    color=components_colors['Heater On State'][0],value=False,size=indicator_size
+    )
+
+heater_indicator_div= html.Div(id='heater_indicator_div', children=[
+    daq.DarkThemeProvider(theme=leds_theme, children=heater_indicator)],
+                          style=dict(width='100%',display= 'flex', alignItems= 'center', justifyContent= 'center')
+                          )
+
+heater_button=html.Div([dbc.Button("On/Off",size='lg',outline=False, color="primary", className="me-1", n_clicks=0,id="heater_button"
+                            ,style=dict(fontWeight='bold',border='1px solid transparent',
+                                        backgroundColor=components_colors['Buttons'][0],
+                                        color=components_colors['Buttons Text'][0]
+                                        )
+                            )],style=dict(display='inline-block'))
+
+
+heater_buttons_div=html.Div([heater_button],
+                                style=dict(width='100%',
+                     display= 'flex', alignItems= 'center', justifyContent= 'center'))
+
+
+cycle_timer=daq.LEDDisplay(
+    id='cycle_timer',className='timer',
+    label=dict(label="Cycle Timer",style=dict(color=components_colors['Containers Label'][0],fontWeight='bold')),
+    value='00:00' , size=30 , color=components_colors['Timer Numbers'][0],backgroundColor=components_colors['Timer Background'][0]
+#42C4F7"
+#0f2937 #FF5E5E
 )
+cycle_timer_div=html.Div(cycle_timer,style=dict(width='100%',
+                     display= 'flex', alignItems= 'center', justifyContent= 'center'))
 
-# setting the size and spacing using dash bootstrap
-db_navigation_header=dbc.Col([navigation_header],
-                             xs=dict(size=12, offset=0), sm=dict(size=12, offset=0),
-                             md=dict(size=12, offset=0), lg=dict(size=10, offset=1), xl=dict(size=10, offset=1)
-                             )
+timer_update=dcc.Interval(id="timer_update",interval=1000,n_intervals=0)
 
-
-# creating dash app layout object which will contain the layout of all pages
-# note that i included the components that will exist in all pages like navigation header and logo image
-# then i included an empty Row ( dbc.Row( id='layout') ) in which the layout of the chosen page will exist and i use callback function for that
-# note that dcc.Location(id='url', refresh=True,pathname='/Flow') holds the current page pathname which is changed from the navigation header
-# the value of ( href = /Flow ) in navigation header is the value of pathname this component holds and it is used to switch between pages layout by using the callback function
-
-app.layout=html.Div([ dbc.Row([db_logo_img,db_header_text],style=dict(backgroundColor='#20374c') )
-                      ,dbc.Row([db_navigation_header])  , html.Br()  ,dbc.Row( id='layout')
-
-                       ,dcc.Location(id='url', refresh=True,pathname='/price')
-
-                      ])
+emergency_stop=dbc.Button("Stop All",size='lg', color="danger",n_clicks=0,id="emergency_stop",className='stop'
+                            ,style=dict(fontWeight='bold',border='1px solid red')
+                            )
+emergency_stop_div=html.Div(emergency_stop,style=dict(width='100%',
+                     display= 'flex', alignItems= 'center', justifyContent= 'center'))
 
 
-
-# a callback that takes curent pathname ( pressed page ) and changes the layout to the related page layout
-# im using here functions that exist in the other files which are used to create the related page layout
-# the output here is the layout Row in app.layout ( dbc.Row( id='layout') )
-
-@app.callback(Output('layout','children'),
-               Input('url','pathname'))
-def change_page(url):
-    if url == '/Flow':
-        layout=flow_page.creat_flow_layout()
-        return layout
-
-    elif url == '/price':
-        layout=price_page.creat_price_layout()
-        return layout
-
-    elif url == '/TransmisionCap':
-        layout=capacity_page.create_capacity_layout()
-        return layout
-
-    elif url == '/NetImport':
-        layout=net_import.create_net_import_layout()
-        return layout
-    elif url == '/Planets':
-        layout=gen_by_type.creat_gen_layout()
-        return layout
-
-    else:
-        return dash.no_update  # means dont update the output if other pathname is chosen
-
-# used to update the flow page line chart
-# inputs are chosen country , resolution , scenarios which are dash components created in flow page
-# output is0 the flow line chart figure
-# and the graph dataframe stored ad json in ( dcc.Store() ) component to be downloaded when pressing on download button in anothrt callback
-
-@app.callback([Output('flow_line_chart','figure'),Output('flow_data','data')],
-               [Input('flow_country_menu','value'),Input('flow_resolution_menu','value'),Input('flow_scenarios_list','value')]
-              )
-def update_flow_line_chart(selected_countries,selected_resolution,selected_scenarios):
+power_button_theme = {
+    'dark': True,
+    'detail': 'darkgrey',
+    'primary': 'darkgrey',
+    'secondary': components_colors['Pressure Washer Off State'][0]
+}
 
 
-    with open("Flow_20220208.pickle", "rb") as f:    # opening the flow pickle file
-        object = pkl.load(f)   # loading it as a python dictionery , src : https://www.kite.com/python/answers/how-to-read-a-pickle-file-in-python
-
-    df = object['{}'.format(selected_countries)] # getting the dataframe of the selected country in dropdown menu from the pickle file
-
-    ######### very important
-    object=None  # clearing the variables that holds the pickle file after using it tor free up Ram memory
-                 # this was the solution to the performance problem specially in generation pickle file ( 3.2 gigabytes )
+power_button= daq.PowerButton(on=False,color=components_colors['Pressure Washer On State'][0],className='power',size=100,id='power_button',
+                             label=dict(label='Pressure Washer',style=dict(color=components_colors['Containers Label'][0],fontWeight='bold')))
 
 
-    df.set_index('Date', inplace=True) # setting the index of data frame to be date , src : https://pandas.pydata.org/docs/reference/api/pandas.DataFrame.set_index.html
+power_button_div=html.Div(id='power_button_div', children=[
+    daq.DarkThemeProvider(theme=power_button_theme, children=power_button)],
+                          style=dict(width='100%',display= 'flex', alignItems= 'center', justifyContent= 'center')
+                          )
 
-    df.columns=['1991', '1992', '1993', '1994', '1995', '1996', '1997',
-            '1998', '1999', '2000', '2001', '2002', '2003', '2004',     # change the name of dataframe columns
-            '2005', '2006', '2007', '2008', '2009', '2010', '2011',
-            '2012', '2013', '2014', '2015', 'Normal']
-
-    df['Exp']=df.iloc[: , :-1].mean(axis=1) # creating a newe column named EXP which is the mean of all scenarios columns except Normal
-                                            #df.iloc src : https://www.shanelynn.ie/pandas-iloc-loc-select-rows-and-columns-dataframe/
-                                            # note that axis = 1 means that the means is calculated from rows side ( row by row )
-
-    graph_data =df.resample('3M').mean() # initial value of the final dataframe to be plotted
-                                         # resample function aggregate the dataframe on its date index by the resolution chosen ( 3M = every 3 Months )
-                                         # src : https://www.geeksforgeeks.org/python-pandas-dataframe-resample/
-
-
-    # resampling the dataframe based on resolution chosen from dropdown menu
-
-    if selected_resolution == 'Mean Agg. Quarterly':
-        graph_data=df.resample('3M').mean()
-
-    elif selected_resolution == 'Sum Agg. Quarterly':
-        graph_data=df.resample('3M').sum()
-
-    elif selected_resolution == 'Mean Agg. Monthly':
-        graph_data=df.resample('1M').mean()
-
-    elif selected_resolution == 'Sum Agg. Monthly':
-        graph_data=df.resample('1M').sum()
-
-    elif selected_resolution == 'Mean Agg. Daily':
-        graph_data=df.resample('1D').mean()
-
-    elif selected_resolution == 'Sum Agg. Daily':
-        graph_data=df.resample('1D').sum()
-
-    elif selected_resolution== 'Hourly':
-        graph_data=df
-
-    fig=go.Figure() # initializing an empty plotly figure
-    colors = px.colors.qualitative.Light24 # creating a color list from plotly default color scale ( Light24 )
-                                           # you can check it here : https://plotly.com/python/discrete-color/
-
-    colors[0]='lightsalmon' # changing first color in list
-    colors.extend(['#d5f4e6','#80ced6','#c83349']) # adding more colors to list
-
-    # making a dictionery of all selected scenarios colors to be used in figure
-    # the reason for this dictionery is that every scenario will have constant color in the page no matter what the order of selection
-    scenarios_colors = {'1991': colors[0], '1992': colors[1], '1993': colors[2], '1994': colors[3],
-                      '1995': colors[4], '1996': colors[5], '1997': colors[6], '1998': colors[7],
-                      '1999': colors[8], '2000': colors[9],'2001': colors[10],'2002': colors[11],'2003': colors[12]
-                        ,'2004': colors[13],'2005': colors[14],'2006': colors[15],'2007': colors[16],'2008': colors[17],
-                        '2009': colors[18],'2010': colors[19],'2011': colors[20],'2012': colors[21],'2013': colors[22],
-                        '2014': colors[23],'2015': colors[24],'Normal': colors[25],'Exp':colors[26]}
-
-    # looping through selected scenarios got from check boxes and ploting the related line chart
-    # plotly line chart reference : https://plotly.com/python/line-charts/
-    # note that there are 2 plotly graphing libraries (plotly.graph_objects and plotly_express) i use plotly.graph_objects because it has more customizations
-    i=0
-    for scenario in selected_scenarios:
-        fig.add_trace(go.Scatter(x=graph_data.index, y=graph_data[scenario].astype('int64'), mode='lines', name=scenario,
-                                 marker_color=scenarios_colors[scenario] # color from dictionery
-                                 ))
-        i+=1
-
-
-    # creating the layout of all line charts where you can change titles , colors , and everything , you can find more info on link above
-    fig.update_layout(
-        title='Power Flow', xaxis_title='Date', yaxis_title='MWh/h',
-        font=dict(size=14, family='Arial', color='white'), hoverlabel=dict(
-            font_size=16, font_family="Rockwell", font_color='white', bgcolor='#20374c'), plot_bgcolor='#20374c',
-        paper_bgcolor='#20374c',
-        xaxis=dict(
-
-            tickwidth=2, tickcolor='#80ced6',
-            ticks="outside",
-            tickson="labels",
-            rangeslider_visible=False
-        )
+color_picker=    daq.ColorPicker(id='color_picker', className='color_picker',size=190,
+        label=dict(label='Color Picker',style=dict(color='white',fontWeight='bold')),
+        value=dict(hex='#119DFF')
     )
-#boundaries
-    # 0f2537
+color_picker_div=html.Div(color_picker,style=dict(display='inline-block'))
 
-    fig.update_xaxes(showgrid=False, showline=True, zeroline=False) # removing grid lines and other extra lines so that graph is more clear
-    fig.update_yaxes(showgrid=False, showline=True, zeroline=False)
+component_text= html.Div(html.H1('Choose a Component',
+                                    style=dict(fontSize=text_font_size, fontWeight='bold', color='white',
+                                               marginTop='')),
+                            style=dict(display='', marginLeft='', textAlign="center", width='100%'))
 
-    graph_data['Date']=graph_data.index # setting the graph data column to be same as date index because datframe index is not save in json format
-    selected_scenarios.append('Date') # adding name Date to selected columns list
-    return (fig , graph_data[selected_scenarios].to_dict('records')) # returning the figure created and dataframe as json data ( dictionery )
-                                                                     # to_dict() src ; https://pandas.pydata.org/docs/reference/api/pandas.DataFrame.to_dict.html
+components_menu = dcc.Dropdown(className="custom-dropdown",
+                 id='components_menu',
+                 options=[{'label': 'Main Background', 'value': 'Main Background'},{'label': 'Header Background', 'value': 'Header Background'},
+                 {'label': 'Main Header Text', 'value': 'Main Header Text'},{'label': 'Containers Background', 'value': 'Containers Background'},
+                 {'label': 'Containers Label', 'value': 'Containers Label'},{'label': 'Buttons', 'value': 'Buttons'},
+                 {'label': 'Buttons Text', 'value': 'Buttons Text'},{'label': 'Leds Off State', 'value': 'Leds Off State'},
+                 {'label': 'Pre-Soak On State', 'value': 'Pre-Soak On State'},{'label': 'Soap On State', 'value': 'Soap On State'},
+                 {'label': 'Degreaser On State', 'value': 'Degreaser On State'},{'label': 'Rinse On State', 'value': 'Rinse On State'},
+                 {'label': 'Wax On State', 'value': 'Wax On State'},{'label': 'Heater On State', 'value': 'Heater On State'},
+                 {'label': 'Pressure Washer On State', 'value': 'Pressure Washer On State'},
+                 {'label': 'Pressure Washer Off State', 'value': 'Pressure Washer Off State'},
+                 {'label': 'Timer Numbers', 'value': 'Timer Numbers'},{'label': 'Timer Background', 'value': 'Timer Background'},
+                 {'label': 'Contact Info Text', 'value': 'Contact Info Text'}
+                              ]
+                            # get all countries from countries list
+                            ,
+                            value='Main Background',
+                            style=dict(color='#0f2537', fontWeight='bold', textAlign='center',
+                                       width='23vh', backgroundColor='#0f2537', border='')
+                            )
 
+upload_img_text= html.Div(html.H1('Change Logo',
+                                    style=dict(fontSize=text_font_size, fontWeight='bold', color='white',
+                                               marginTop='')),
+                            style=dict(display='', textAlign="", width='100%'))
 
+upload_img =dcc.Upload(id='upload_img',children=dbc.Button("Upload Logo", color="primary", size='lg', outline=True,
+                                       n_clicks=0,id="upload_img_button",style=dict(fontSize=text_font_size,color='white') ) )
 
+change_logo_div=html.Div([upload_img_text,upload_img],
+                            style=dict(fontSize=text_font_size,display='inline-block',marginLeft='2vw',textAlign="center",
+                                       verticalAlign='top'))
 
+components_menu_div = html.Div([change_logo_div,html.Br(),html.Br(),html.Br(),component_text,components_menu],
+                            style=dict(fontSize=text_font_size,display='inline-block',marginLeft='2vw',textAlign="center",marginBottom='10vh',
+                                       verticalAlign='top'))
 
+apply_button=html.Div([dbc.Button("Apply",size='lg',outline=False, color="primary", className="me-1", n_clicks=0,id="apply_button"
+                            ,style=dict(fontWeight='bold',border='1px solid transparent',
+                                        backgroundColor='#3d9be7',
+                                        color='white'
+                                        )
+                            )],style=dict(display='inline-block'))
 
+default_button=html.Div([dbc.Button("Default",size='lg',outline=False, color="primary", className="me-1", n_clicks=0,id="default_button"
+                            ,style=dict(fontWeight='bold',border='1px solid transparent',
+                                        backgroundColor='#3d9be7',
+                                        color='white'
+                                        )
+                            )],style=dict(display='inline-block',marginLeft='2vw'))
 
-# updating stalked area chart
-# inputs are country , resolution , facilities list
-# output is the figure
-# note that prevent_initial_call=True prevents the initial call of callback when page is loaded and only called when inputs are changed
-#########  this is better for performance to not read the 3 large pickle file 3 times on loading
-# src : https://dash.plotly.com/advanced-callbacks
+coloring_buttons_div=html.Div([apply_button,default_button],
+                                style=dict(width='100%',
+                     display= 'flex', alignItems= 'center', justifyContent= 'center'))
 
-@app.callback(Output('gen_area_chart','figure'),
-               [Input('facilities_country_menu','value'),Input('facilities_resolution_menu','value'),Input('facilities_list','value')]
-,prevent_initial_call=True
-              )
-def update_area_chart(selected_countries,selected_resolution,selected_facilities):
+contact_info=html.Div(html.H1(contact_info_dict['text'],className='mytext',
+                                    style=dict(fontSize='', fontWeight='bold', color=contact_info_dict['color'],
+                                               marginTop='') ,id='contact_info_text' ),
+                            style=dict(display='', marginLeft='', textAlign="center", width='100%'))
 
+edit_text=html.Div(html.H1('Edit Contact Info Text',className='mytext2',
+                                    style=dict(fontSize='', fontWeight='bold', color='white',
+                                               marginTop='')),
+                            style=dict(display='', marginLeft='', textAlign="center", width='100%'))
 
-    with open("Gen_Type_20220209.pickle", "rb") as f:
-        object = pkl.load(f)
-
-    # taking the part of dictionery related to the country chosen
-    # src : https://www.kite.com/python/answers/how-to-take-a-subset-of-a-dictionary-in-python
-    object_subset = {key: value for key, value in object.items() if selected_countries in key}
-    object=None
-
-    fig=go.Figure()
-    colors = px.colors.qualitative.Light24
-    colors[0]='lightsalmon'
-    colors.extend(['#d5f4e6','#80ced6','#c83349'])
-    fac_colors = {'Solar': colors[0], 'CHP': colors[1], 'Coal': colors[2], 'CH4': colors[3],
-                      'Hydro': colors[4], 'Lignite': colors[5], 'Nuc': colors[6], 'Oil': colors[7],
-                      'Other/': colors[8], 'Pump': colors[9],'Res': colors[10],'RoR': colors[11],'Biofuels': colors[14]
-                      ,'Wind': colors[25]}
-
-
-    country_facilities=pd.Series(data=list(object_subset.keys()) ) # taking the keys of dictionery which represents the facilities names
-
-    # looping through all selected facilities from check boxes
-    for facility in selected_facilities:
-        if facility != 'Other/': # if facility name not equal to Other/
-            df_name=country_facilities[country_facilities.str.contains(facility)].values[0] # dataframe name got from country_facilities names
-                                                                                            # that contains the corresponding selected name
-                                                                                            # src : https://pandas.pydata.org/docs/reference/api/pandas.Series.str.contains.html
-            df=object_subset[df_name] # get the dataframe of that name from pickle dictionery
-            df.set_index('Date', inplace=True)
-            df.columns = ['1991', '1992', '1993', '1994', '1995', '1996', '1997',
-                          '1998', '1999', '2000', '2001', '2002', '2003', '2004',
-                          '2005', '2006', '2007', '2008', '2009', '2010', '2011',
-                          '2012', '2013', '2014', '2015', 'Normal']
-
-            graph_data = df.resample('3M').mean()
-
-            if selected_resolution == 'Mean Agg. Quarterly':
-                graph_data = df.resample('3M').mean()
-
-            elif selected_resolution == 'Sum Agg. Quarterly':
-                graph_data = df.resample('3M').sum()
-
-            elif selected_resolution == 'Mean Agg. Monthly':
-                graph_data = df.resample('1M').mean()
-
-            elif selected_resolution == 'Sum Agg. Monthly':
-                graph_data = df.resample('1M').sum()
-
-            elif selected_resolution == 'Mean Agg. Daily':
-                graph_data = df.resample('1D').mean()
-
-            elif selected_resolution == 'Sum Agg. Daily':
-                graph_data = df.resample('1D').sum()
-
-            elif selected_resolution == 'Hourly':
-                graph_data = df
-
-            fac_name=facility.replace('/','')  # name of facitlity chosen that will be used as graph legend (.replace() removes '/'  )
-            # creating line chart with adding stackgroup='one' to convert it to area chart
-            # src : https://plotly.com/python/filled-area-plots/
-            fig.add_trace(go.Scatter(x=graph_data.index, y=graph_data['Normal'].astype('int64'), mode='lines', name=fac_name,
-                                     marker_color=fac_colors[facility] ,stackgroup='one'
-                                     ))
-
-        else: # if Other/ in facility name
-            other_names=country_facilities[country_facilities.str.contains(facility)] # getting dataframes names that contains Other/
-
-            df=pd.Series(data=0,index=object_subset[other_names.values[0]]['Date']) # creating empty series to calculate sum on it
-
-            for name in other_names: # for every dataframe that contains /Other
-                new_df=object_subset[name].iloc[:, 25].reindex(df.index,fill_value=0) # dataframe got from pickle object and
-                                                                                     # reindexing it yo same index of initial one to be able to get sum
-                df=df+new_df
-
-            graph_data = df.resample('3M').mean()
-
-            if selected_resolution == 'Mean Agg. Quarterly':
-                graph_data = df.resample('3M').mean()
-
-            elif selected_resolution == 'Sum Agg. Quarterly':
-                graph_data = df.resample('3M').sum()
-
-            elif selected_resolution == 'Mean Agg. Monthly':
-                graph_data = df.resample('1M').mean()
-
-            elif selected_resolution == 'Sum Agg. Monthly':
-                graph_data = df.resample('1M').sum()
-
-            elif selected_resolution == 'Mean Agg. Daily':
-                graph_data = df.resample('1D').mean()
-
-            elif selected_resolution == 'Sum Agg. Daily':
-                graph_data = df.resample('1D').sum()
-
-            elif selected_resolution == 'Hourly':
-                graph_data = df
-
-            fac_name = facility.replace('/', '')
-            fig.add_trace(go.Scatter(x=graph_data.index, y=graph_data.astype('int64'), mode='lines', name=fac_name,
-                                     marker_color=fac_colors[facility] ,stackgroup='one'
-                                     ))
-
-    object_subset=None
-
-    fig.update_layout(
-        title='Power Produced by Facilities', xaxis_title='Date', yaxis_title='MWh/h',
-        font=dict(size=14, family='Arial', color='white'), hoverlabel=dict(
-            font_size=16, font_family="Rockwell", font_color='white', bgcolor='#20374c'), plot_bgcolor='#20374c',
-        paper_bgcolor='#20374c',
-        xaxis=dict(
-
-            tickwidth=2, tickcolor='#80ced6',
-            ticks="outside",
-            tickson="labels",
-            rangeslider_visible=False
+edit_contact_info=dbc.Textarea( size="lg", placeholder="Please enter your text here",className='my-textera',id='textera'
         )
-    )
-#boundaries
-    # 0f2537
 
-    fig.update_xaxes(showgrid=False, showline=True, zeroline=False)
-    fig.update_yaxes(showgrid=False, showline=True, zeroline=False)
+apply_text=html.Div([dbc.Button("Apply",size='lg',outline=False, color="primary", className="me-1", n_clicks=0,id="apply_button2"
+                            ,style=dict(fontWeight='bold',border='1px solid transparent',
+                                        backgroundColor='#3d9be7',
+                                        color='white'
+                                        )
+                            )],style=dict(display='inline-block'))
 
-    return fig
+default_text=html.Div([dbc.Button("Default",size='lg',outline=False, color="primary", className="me-1", n_clicks=0,id="default_button2"
+                            ,style=dict(fontWeight='bold',border='1px solid transparent',
+                                        backgroundColor='#3d9be7',
+                                        color='white'
+                                        )
+                            )],style=dict(display='inline-block',marginLeft='2vw'))
+
+editing_buttons_div=html.Div([apply_text,default_text],
+                                style=dict(width='100%',
+                     display= 'flex', alignItems= 'center', justifyContent= 'center'))
+
+main_layout=html.Div([
+    dbc.Row([db_header_text],style=dict(backgroundColor=components_colors['Header Background'][0]),id='main_header' )
+                        ,html.Br(),
+       dbc.Row([
+
+           dbc.Col([dbc.Card(dbc.CardBody(
+        [html.Div([presoaking_indicator_div ,html.Br(),presoaking_buttons_div,html.Br()
+
+                   ], style=dict(height=''))])
+        , style=dict(backgroundColor=components_colors['Containers Background'][0]),id='card1',className='mycard'), html.Br()
+    ], xl=dict(size=2,offset=1),lg=dict(size=2,offset=1),
+                     md=dict(size=3,offset=0),sm=dict(size=6,offset=0),xs=dict(size=6,offset=0)),
+
+                      dbc.Col([dbc.Card(dbc.CardBody(
+                          [html.Div([soap_indicator_div, html.Br(),soap_buttons_div,html.Br()
+
+                                     ], style=dict(height=''))])
+                          , style=dict(backgroundColor=components_colors['Containers Background'][0]),id='card2',className='mycard'), html.Br()
+                      ], xl=dict(size=2, offset=0), lg=dict(size=2, offset=0),
+                          md=dict(size=3, offset=0), sm=dict(size=6, offset=0), xs=dict(size=6, offset=0)),
+
+           dbc.Col([dbc.Card(dbc.CardBody(
+               [html.Div([degreaser_indicator_div, html.Br(), degreaser_buttons_div,html.Br()
+
+                          ], style=dict(height=''))])
+               , style=dict(backgroundColor=components_colors['Containers Background'][0]),id='card3',className='mycard'), html.Br()
+           ], xl=dict(size=2, offset=0), lg=dict(size=2, offset=0),
+               md=dict(size=3, offset=0), sm=dict(size=6, offset=0), xs=dict(size=6, offset=0)),
+
+           dbc.Col([dbc.Card(dbc.CardBody(
+               [html.Div([rinse_indicator_div, html.Br(), rinse_buttons_div,html.Br()
+
+                          ], style=dict(height=''))])
+               , style=dict(backgroundColor=components_colors['Containers Background'][0]),id='card4',className='mycard'), html.Br()
+           ], xl=dict(size=2, offset=0), lg=dict(size=2, offset=0),
+               md=dict(size=3, offset=0), sm=dict(size=6, offset=0), xs=dict(size=6, offset=0)) ,
+
+           dbc.Col([dbc.Card(dbc.CardBody(
+               [html.Div([wax_indicator_div, html.Br(), wax_buttons_div, html.Br()
+
+                          ], style=dict(height=''))])
+               , style=dict(backgroundColor=components_colors['Containers Background'][0]),id='card5',className='mycard'), html.Br()
+           ], xl=dict(size=2, offset=0), lg=dict(size=2, offset=0),
+               md=dict(size=3, offset=0), sm=dict(size=6, offset=0), xs=dict(size=6, offset=0)),
+
+           dbc.Col([dbc.Card(dbc.CardBody(
+               [html.Div([power_button_div,html.Br()
+
+                          ], style=dict(height=''))])
+               , style=dict(backgroundColor=components_colors['Containers Background'][0]),id='card6',className='mycard'), html.Br()
+           ], xl=dict(size=2, offset=1), lg=dict(size=2, offset=1),
+               md=dict(size=3, offset=0), sm=dict(size=6, offset=0), xs=dict(size=6, offset=0)) ,
+
+           dbc.Col([dbc.Card(dbc.CardBody(
+               [html.Div([heater_indicator_div, html.Br(), heater_buttons_div, html.Br()
+
+                          ], style=dict())])
+               , style=dict(backgroundColor=components_colors['Containers Background'][0]),id='card7',className='mycard'), html.Br()
+           ], xl=dict(size=2, offset=0), lg=dict(size=2, offset=0),
+               md=dict(size=3, offset=0), sm=dict(size=6, offset=0), xs=dict(size=6, offset=0),style=dict()
+           ),
+
+           dbc.Col([dbc.Card(dbc.CardBody(
+               [html.Div([ cycle_timer_div
+
+                          ], style=dict())])
+               , style=dict(backgroundColor=components_colors['Containers Background'][0]),id='card8',className='mycard'), html.Br()
+           ], xl=dict(size=2, offset=0), lg=dict(size=2, offset=0),
+               md=dict(size=3, offset=0), sm=dict(size=6, offset=0), xs=dict(size=6, offset=0),style=dict()
+           )
+         ,
+
+           dbc.Col([
+               html.Div([html.Br(), logo_img_div
+
+                         ], style=dict())
+               , html.Br()
+           ], xl=dict(size=3, offset=0), lg=dict(size=4, offset=0),
+               md=dict(size=6, offset=3), sm=dict(size=10, offset=1), xs=dict(size=10, offset=1),
+               style=dict()
+           )
+                ,html.Br()
+          , contact_info
+
+            ,timer_update
+
+])
+])
+
+if system_mode=='editing':
+    app.layout=html.Div([  main_layout,html.Br(), dbc.Row([
+        dbc.Col([dbc.Card(dbc.CardBody(
+            [html.Div([color_picker_div, components_menu_div], style=dict(width='100%',
+                                                                          display='flex', alignItems='center',
+                                                                          justifyContent='center'))
+             , html.Br(),coloring_buttons_div
+             ])
+            , style=dict(backgroundColor='#20374c'), id='card9',
+            className='my-color-picker'), html.Br()
+        ], xl=dict(size=4, offset=2), lg=dict(size=6, offset=1),
+            md=dict(size=8, offset=0), sm=dict(size=10, offset=1), xs=dict(size=10, offset=1), style=dict()
+        )
+    ,
+        dbc.Col([dbc.Card(dbc.CardBody(
+            [edit_text,html.Br(),edit_contact_info , html.Br(),editing_buttons_div
+             ])
+            , style=dict(backgroundColor='#20374c'), id='card10',
+            className='my-textera-container'), html.Br()
+        ], xl=dict(size=4, offset=0), lg=dict(size=4, offset=0),
+            md=dict(size=4, offset=0), sm=dict(size=10, offset=1), xs=dict(size=10, offset=1), style=dict()
+        )
+
+    ])
+
+       ],style=dict(backgroundColor=components_colors['Main Background'][0]),className='main',id='main_div')
+
+else :
+    app.layout=html.Div([main_layout,dcc.Store(id='data_updated',data='updated'),dcc.Store(id='database',data=data_dict),
+                         dcc.Interval(id='server_interval',n_intervals=200),
+
+
+    ],style=dict(backgroundColor=components_colors['Main Background'][0]),className='main',id='main_div')
+
+'''
+[ Output('presoaking_indicator', 'value'), Output('soap_indicator', 'value'),
+                   Output('degreaser_indicator', 'value'), Output('rinse_indicator', 'value'),
+                   Output('wax_indicator', 'value'), Output('power_button', 'on'), Output('heater_indicator', 'value') ]
+'''
+if system_mode!='editing':
+
+    @app.callback([Output('presoaking_indicator', 'value'), Output('soap_indicator', 'value'),
+                   Output('degreaser_indicator', 'value'), Output('rinse_indicator', 'value'),
+                   Output('wax_indicator', 'value'), Output('power_button', 'on'), Output('heater_indicator', 'value'),
+                   Output('cycle_timer','value')]
+                   ,
+                  [Input('presoaking_button', 'n_clicks'), Input('soap_button', 'n_clicks'),
+                   Input('degreaser_button', 'n_clicks'), Input('rinse_button', 'n_clicks'),
+                   Input('wax_button', 'n_clicks'),
+                   Input('power_button', 'on'), Input('heater_button', 'n_clicks'),Input('server_interval','n_intervals')
+                   ],
+                  [State('presoaking_indicator', 'value'), State('soap_indicator', 'value'),
+                   State('degreaser_indicator', 'value'), State('rinse_indicator', 'value'),
+                   State('wax_indicator', 'value'),
+                   State('power_button', 'on'), State('heater_indicator', 'value')
+
+                   ], prevent_initial_call=True)
+    def cycle_control(presoaking_button, soap_button, degreaser_button,
+                      rinse_button, wax_button, pressure_washer_button, heater_button,server_interval
+                      , presoaking_state, soap_state, degreaser_state, rinse_state, wax_state, pressure_washer_state,
+                      heater_state
+                      ):
+        global idle_state, washing_state, system_state, start_time, seconds , time_passed
+        ctx = dash.callback_context
+        button_pressed = ctx.triggered[0]['prop_id'].split('.')[0]
 
 
 
-# creating stacked balancing assets bar chart
-# inputs are country , resolution , the 3 assets list
 
-@app.callback(Output('gen_bar_chart','figure'),
-               [Input('bar_country_menu','value'),Input('bar_resolution_menu','value'),Input('planets_list','value')]
-,prevent_initial_call=True
+        if system_state == idle_state:
+            if button_pressed == 'power_button':
+                if pressure_washer_state == True:
+                    system_state = washing_state
+                    start_time = time.time()
+                    # pressure_washer pin on
+                    #GPIO.output(power_relay_GBIO, GPIO.HIGH)
+                    redis_data.set("power","on")
+                    return (dash.no_update, dash.no_update, dash.no_update, dash.no_update, dash.no_update, True,
+                            dash.no_update,time_passed)
+                else:
+                    raise PreventUpdate
+
+            else:
+                raise PreventUpdate
+
+
+
+        elif system_state == washing_state:
+            seconds = int(time.time() - start_time)
+            min,sec=divmod(seconds,60)
+            if len(str(min))==1:
+                min='0{}'.format(min)
+
+            if len(str(sec))==1:
+                sec='0{}'.format(sec)
+
+            time_passed='{}:{}'.format(min,sec)
+            if button_pressed == 'power_button':
+                if pressure_washer_state == False:
+                    system_state = finished_washing_state
+                    '''
+                    GPIO.output(power_relay_GBIO, GPIO.LOW)
+                    GPIO.output(presoak_relay_GBIO, GPIO.LOW)
+                    GPIO.output(soap_relay_GBIO, GPIO.LOW)
+                    GPIO.output(degreaser_relay_GBIO, GPIO.LOW)
+                    GPIO.output(rinse_relay_GBIO, GPIO.LOW)
+                    GPIO.output(wax_relay_GBIO, GPIO.LOW)
+                    GPIO.output(heater_relay_GBIO, GPIO.LOW)
+                    '''
+                    # all pins off
+                    redis_data.set("power", "")
+                    redis_data.set("presoak", "")
+                    redis_data.set("soap", "")
+                    redis_data.set("degreaser", "")
+                    redis_data.set("rinse", "")
+                    redis_data.set("wax", "")
+                    redis_data.set("heater", "")
+
+                    return (False, False, False, False, False, False, False,time_passed)
+
+            elif button_pressed == 'presoaking_button':
+
+                if presoaking_state == True:
+                    # presoaking pin off
+                   # GPIO.output(presoak_relay_GBIO, GPIO.LOW)
+                    redis_data.set("presoak", "")
+                    return (False, dash.no_update, dash.no_update, dash.no_update, dash.no_update, dash.no_update,
+                            dash.no_update,time_passed)
+
+                elif presoaking_state == False:
+                # presoaking pin on and the other 4 pins on top off
+                    '''
+                    GPIO.output(presoak_relay_GBIO, GPIO.HIGH)
+                    GPIO.output(soap_relay_GBIO, GPIO.LOW)
+                    GPIO.output(degreaser_relay_GBIO, GPIO.LOW)
+                    GPIO.output(rinse_relay_GBIO, GPIO.LOW)
+                    GPIO.output(wax_relay_GBIO, GPIO.LOW)
+                    '''
+                    redis_data.set("presoak", "on")
+                    redis_data.set("soap", "")
+                    redis_data.set("degreaser", "")
+                    redis_data.set("rinse", "")
+                    redis_data.set("wax", "")
+                    return (True, False, False, False, False, dash.no_update, dash.no_update,time_passed)
+
+
+            elif button_pressed == 'soap_button':
+
+                if soap_state == True:
+                    # soap pin off
+                  #  GPIO.output(soap_relay_GBIO, GPIO.LOW)
+                    redis_data.set("soap", "")
+                    return (dash.no_update, False, dash.no_update, dash.no_update, dash.no_update, dash.no_update,
+                            dash.no_update,time_passed)
+
+                elif soap_state == False:
+                # soap pin on and the other 4 pins on top off
+                    '''
+                    GPIO.output(presoak_relay_GBIO, GPIO.LOW)
+                    GPIO.output(soap_relay_GBIO, GPIO.HIGH)
+                    GPIO.output(degreaser_relay_GBIO, GPIO.LOW)
+                    GPIO.output(rinse_relay_GBIO, GPIO.LOW)
+                    GPIO.output(wax_relay_GBIO, GPIO.LOW)
+                    '''
+                    redis_data.set("presoak", "")
+                    redis_data.set("soap", "on")
+                    redis_data.set("degreaser", "")
+                    redis_data.set("rinse", "")
+                    redis_data.set("wax", "")
+                    return (False, True, False, False, False, dash.no_update, dash.no_update,time_passed)
+
+
+            elif button_pressed == 'degreaser_button':
+
+                if degreaser_state == True:
+                    # degreaser pin off
+                  #  GPIO.output(degreaser_relay_GBIO, GPIO.LOW)
+                    redis_data.set("degreaser", "")
+                    return (dash.no_update, dash.no_update, False, dash.no_update, dash.no_update, dash.no_update,
+                            dash.no_update,time_passed)
+
+                elif degreaser_state == False:
+                    # degreaser pin on and the other 3 pins on top off
+                    '''
+                    GPIO.output(presoak_relay_GBIO, GPIO.LOW)
+                    GPIO.output(soap_relay_GBIO, GPIO.LOW)
+                    GPIO.output(degreaser_relay_GBIO, GPIO.HIGH)
+                    GPIO.output(rinse_relay_GBIO, GPIO.LOW)
+                    GPIO.output(wax_relay_GBIO, GPIO.LOW)
+                    '''
+                    redis_data.set("presoak", "")
+                    redis_data.set("soap", "")
+                    redis_data.set("degreaser", "on")
+                    redis_data.set("rinse", "")
+                    redis_data.set("wax", "")
+                    return (False, False, True, False, False, dash.no_update, dash.no_update,time_passed)
+
+
+
+            elif button_pressed == 'rinse_button':
+
+                if rinse_state == True:
+                    # rinse pin off
+                  #  GPIO.output(rinse_relay_GBIO, GPIO.LOW)
+                    redis_data.set("rinse", "")
+                    return (dash.no_update, dash.no_update, dash.no_update, False, dash.no_update, dash.no_update,
+                            dash.no_update,time_passed)
+
+                elif rinse_state == False:
+                    # rinse pin on and the other 3 pins on top off
+                    '''
+                    GPIO.output(presoak_relay_GBIO, GPIO.LOW)
+                    GPIO.output(soap_relay_GBIO, GPIO.LOW)
+                    GPIO.output(degreaser_relay_GBIO, GPIO.LOW)
+                    GPIO.output(rinse_relay_GBIO, GPIO.HIGH)
+                    GPIO.output(wax_relay_GBIO, GPIO.LOW)
+                    '''
+                    redis_data.set("presoak", "")
+                    redis_data.set("soap", "")
+                    redis_data.set("degreaser", "")
+                    redis_data.set("rinse", "on")
+                    redis_data.set("wax", "")
+                    return (False, False, False, True, False, dash.no_update, dash.no_update,time_passed)
+
+            elif button_pressed == 'wax_button':
+
+                if wax_state == True:
+                    # wax pin off
+               #     GPIO.output(wax_relay_GBIO, GPIO.LOW)
+                    redis_data.set("wax", "")
+                    return (dash.no_update, dash.no_update, dash.no_update, dash.no_update, False, dash.no_update,
+                            dash.no_update,time_passed)
+
+                elif wax_state == False:
+                    # wax pin on and the other 3 pins on top off
+                    '''
+                    GPIO.output(presoak_relay_GBIO, GPIO.LOW)
+                    GPIO.output(soap_relay_GBIO, GPIO.LOW)
+                    GPIO.output(degreaser_relay_GBIO, GPIO.LOW)
+                    GPIO.output(rinse_relay_GBIO, GPIO.LOW)
+                    GPIO.output(wax_relay_GBIO, GPIO.HIGH)
+                    '''
+                    redis_data.set("presoak", "")
+                    redis_data.set("soap", "")
+                    redis_data.set("degreaser", "")
+                    redis_data.set("rinse", "")
+                    redis_data.set("wax", "on")
+                    return (False, False, False, False, True, dash.no_update, dash.no_update,time_passed)
+
+            elif button_pressed == 'heater_button':
+
+                if heater_state == True:
+                    # heater pin off
+                #    GPIO.output(heater_relay_GBIO, GPIO.LOW)
+                    redis_data.set("heater", "")
+                    return (
+                        dash.no_update, dash.no_update, dash.no_update, dash.no_update, dash.no_update, dash.no_update,
+                        False,time_passed)
+
+                elif heater_state == False:
+                    # heater pin on
+                #    GPIO.output(heater_relay_GBIO, GPIO.HIGH)
+                    redis_data.set("heater", "on")
+                    return (
+                        dash.no_update, dash.no_update, dash.no_update, dash.no_update, dash.no_update, dash.no_update,
+                        True,time_passed)
+
+            elif button_pressed == 'server_interval':
+                return (bool(redis_data.get('presoak')), bool(redis_data.get('soap')), bool(redis_data.get('degreaser'))
+                        , bool(redis_data.get('rinse')), bool(redis_data.get('wax')), bool(redis_data.get('power')),
+                        bool(redis_data.get('heater')),time_passed
+                        )
+
+            else:
+                raise PreventUpdate
+
+        elif system_state == finished_washing_state:
+            if button_pressed == 'power_button':
+                system_state = washing_state
+                start_time = time.time()
+                # pressure_washer pin on
+              #  GPIO.output(power_relay_GBIO, GPIO.HIGH)
+                redis_data.set("power", "on")
+                return (
+                    dash.no_update, dash.no_update, dash.no_update, dash.no_update, dash.no_update, True,
+                    dash.no_update,time_passed)
+
+            return (bool(redis_data.get('presoak')), bool(redis_data.get('soap')), bool(redis_data.get('degreaser'))
+                    , bool(redis_data.get('rinse')), bool(redis_data.get('wax')), bool(redis_data.get('power')),
+                    bool(redis_data.get('heater')),time_passed
+                    )
+
+        else:
+            raise PreventUpdate
+
+else:
+
+    @app.callback([Output('presoaking_indicator', 'value'), Output('soap_indicator', 'value'),
+                   Output('degreaser_indicator', 'value'), Output('rinse_indicator', 'value'),
+                   Output('wax_indicator', 'value'), Output('power_button', 'on'), Output('heater_indicator', 'value'),
+                   Output('presoaking_indicator', 'color'), Output('soap_indicator', 'color'),
+                   Output('degreaser_indicator', 'color'), Output('rinse_indicator', 'color'),
+                   Output('wax_indicator', 'color'), Output('heater_indicator', 'color'),Output('power_button', 'color'),
+                   Output('presoaking_indicator', 'label'), Output('soap_indicator', 'label'),
+                   Output('degreaser_indicator', 'label'), Output('rinse_indicator', 'label'),
+                   Output('wax_indicator', 'label'), Output('heater_indicator', 'label'),
+                   Output('power_button', 'label')
+                   ],
+                  [Input('presoaking_button', 'n_clicks'), Input('soap_button', 'n_clicks'),
+                   Input('degreaser_button', 'n_clicks'), Input('rinse_button', 'n_clicks'),
+                   Input('wax_button', 'n_clicks'),Input('power_button', 'on'), Input('heater_button', 'n_clicks'),
+                   Input('apply_button', 'n_clicks')
+                   ],
+                  [State('presoaking_indicator', 'value'), State('soap_indicator', 'value'),
+                   State('degreaser_indicator', 'value'), State('rinse_indicator', 'value'),
+                   State('wax_indicator', 'value'),
+                   State('power_button', 'on'), State('heater_indicator', 'value'),
+                   State('components_menu','value'),State('color_picker','value')
+
+                   ])
+    def update_indicators(presoaking_button, soap_button, degreaser_button,
+                      rinse_button, wax_button, pressure_washer_button, heater_button,apply_button
+                      , presoaking_state, soap_state, degreaser_state, rinse_state, wax_state, pressure_washer_state,
+                      heater_state , component,color_picked
+                      ):
+        global idle_state, washing_state, system_state, start_time, seconds , df , components_colors
+        ctx = dash.callback_context
+
+
+
+        if not ctx.triggered:
+            df_colors = pd.read_csv(csv_file)
+            colors_dict = df_colors.to_dict('list')
+
+            return (dash.no_update, dash.no_update, dash.no_update, dash.no_update, dash.no_update, dash.no_update,
+                    dash.no_update,colors_dict['Pre-Soak On State'][0],colors_dict['Soap On State'][0],
+                    colors_dict['Degreaser On State'][0],colors_dict['Rinse On State'][0],colors_dict['Wax On State'][0],
+                    colors_dict['Heater On State'][0],colors_dict['Pressure Washer On State'][0],
+                    dict(label='Pre-Soak',style=dict(color=colors_dict['Containers Label'][0], fontWeight='bold'))
+                    ,dict(label='Soap',style=dict(color=colors_dict['Containers Label'][0], fontWeight='bold'))
+                    ,dict(label='Degreaser',style=dict(color=colors_dict['Containers Label'][0], fontWeight='bold')),
+                    dict(label='Rinse',style=dict(color=colors_dict['Containers Label'][0], fontWeight='bold')),
+                    dict(label='Wax',style=dict(color=colors_dict['Containers Label'][0], fontWeight='bold')),
+                    dict(label='Heater',style=dict(color=colors_dict['Containers Label'][0], fontWeight='bold')),
+                    dict(label='Pressure Washer',style=dict(color=colors_dict['Containers Label'][0], fontWeight='bold'))
+                    )
+
+        button_pressed = ctx.triggered[0]['prop_id'].split('.')[0]
+
+
+
+        if button_pressed=='apply_button':
+            if component=='Pre-Soak On State':
+                components_colors['Pre-Soak On State'][0]=color_picked['hex']
+                df=pd.DataFrame(components_colors)
+                df.to_csv(csv_file,index=False)
+                return (dash.no_update, dash.no_update, dash.no_update, dash.no_update, dash.no_update, dash.no_update,
+                        dash.no_update,color_picked['hex'],dash.no_update, dash.no_update, dash.no_update
+                        , dash.no_update, dash.no_update,dash.no_update,
+                        dash.no_update, dash.no_update, dash.no_update,
+                        dash.no_update, dash.no_update, dash.no_update, dash.no_update
+                        )
+
+            elif component=='Soap On State':
+                components_colors['Soap On State'][0]=color_picked['hex']
+                df=pd.DataFrame(components_colors)
+                df.to_csv(csv_file,index=False)
+                return (dash.no_update, dash.no_update, dash.no_update, dash.no_update, dash.no_update, dash.no_update,
+                        dash.no_update,dash.no_update,color_picked['hex'], dash.no_update, dash.no_update
+                        , dash.no_update, dash.no_update,dash.no_update,
+                        dash.no_update, dash.no_update, dash.no_update,
+                        dash.no_update, dash.no_update, dash.no_update, dash.no_update
+                        )
+
+            elif component=='Degreaser On State':
+                components_colors['Degreaser On State'][0]=color_picked['hex']
+                df=pd.DataFrame(components_colors)
+                df.to_csv(csv_file,index=False)
+                return (dash.no_update, dash.no_update, dash.no_update, dash.no_update, dash.no_update, dash.no_update,
+                        dash.no_update,dash.no_update,dash.no_update, color_picked['hex'], dash.no_update
+                        , dash.no_update, dash.no_update,dash.no_update,
+                        dash.no_update, dash.no_update, dash.no_update,
+                        dash.no_update, dash.no_update, dash.no_update, dash.no_update
+                        )
+
+            elif component=='Rinse On State':
+                components_colors['Rinse On State'][0]=color_picked['hex']
+                df=pd.DataFrame(components_colors)
+                df.to_csv(csv_file,index=False)
+                return (dash.no_update, dash.no_update, dash.no_update, dash.no_update, dash.no_update, dash.no_update,
+                        dash.no_update,dash.no_update,dash.no_update, dash.no_update, color_picked['hex']
+                        , dash.no_update, dash.no_update,dash.no_update,
+                        dash.no_update, dash.no_update, dash.no_update,
+                        dash.no_update, dash.no_update, dash.no_update, dash.no_update
+                        )
+
+            elif component=='Wax On State':
+                components_colors['Wax On State'][0]=color_picked['hex']
+                df=pd.DataFrame(components_colors)
+                df.to_csv(csv_file,index=False)
+                return (dash.no_update, dash.no_update, dash.no_update, dash.no_update, dash.no_update, dash.no_update,
+                        dash.no_update,dash.no_update,dash.no_update, dash.no_update, dash.no_update
+                        , color_picked['hex'], dash.no_update,dash.no_update,
+                        dash.no_update, dash.no_update, dash.no_update,
+                        dash.no_update, dash.no_update, dash.no_update, dash.no_update
+                        )
+
+            elif component=='Heater On State':
+                components_colors['Heater On State'][0]=color_picked['hex']
+                df=pd.DataFrame(components_colors)
+                df.to_csv(csv_file,index=False)
+                return (dash.no_update, dash.no_update, dash.no_update, dash.no_update, dash.no_update, dash.no_update,
+                        dash.no_update,dash.no_update,dash.no_update, dash.no_update, dash.no_update
+                        , dash.no_update, color_picked['hex'],dash.no_update,
+                        dash.no_update, dash.no_update, dash.no_update,
+                        dash.no_update, dash.no_update, dash.no_update, dash.no_update
+                        )
+
+            elif component=='Pressure Washer On State':
+                components_colors['Pressure Washer On State'][0]=color_picked['hex']
+                df=pd.DataFrame(components_colors)
+                df.to_csv(csv_file,index=False)
+                return (dash.no_update, dash.no_update, dash.no_update, dash.no_update, dash.no_update, dash.no_update,
+                        dash.no_update,dash.no_update,dash.no_update, dash.no_update, dash.no_update
+                        , dash.no_update, dash.no_update,color_picked['hex'],dash.no_update, dash.no_update, dash.no_update,
+                        dash.no_update, dash.no_update, dash.no_update,dash.no_update)
+
+            elif component=='Containers Label':
+                components_colors['Containers Label'][0]=color_picked['hex']
+                df=pd.DataFrame(components_colors)
+                df.to_csv(csv_file,index=False)
+                return (dash.no_update, dash.no_update, dash.no_update, dash.no_update, dash.no_update, dash.no_update,
+                        dash.no_update,dash.no_update,dash.no_update, dash.no_update, dash.no_update
+                        , dash.no_update, dash.no_update,dash.no_update,
+                        dict(label='Pre-Soak', style=dict(color=color_picked['hex'], fontWeight='bold'))
+                        , dict(label='Soap', style=dict(color=color_picked['hex'], fontWeight='bold'))
+                        , dict(label='Degreaser',style=dict(color=color_picked['hex'], fontWeight='bold')),
+                        dict(label='Rinse', style=dict(color=color_picked['hex'], fontWeight='bold')),
+                        dict(label='Wax', style=dict(color=color_picked['hex'], fontWeight='bold')),
+                        dict(label='Heater', style=dict(color=color_picked['hex'], fontWeight='bold')),
+                        dict(label='Pressure Washer',style=dict(color=color_picked['hex'], fontWeight='bold'))
+                        )
+            else:
+                raise PreventUpdate
+
+
+
+
+        if button_pressed == 'power_button':
+
+            if pressure_washer_state == False:
+                    # all pins off
+                return (dash.no_update, dash.no_update, dash.no_update, dash.no_update, dash.no_update, dash.no_update, dash.no_update,
+                            dash.no_update, dash.no_update, dash.no_update, dash.no_update, dash.no_update,
+                            dash.no_update,
+                            dash.no_update,dash.no_update, dash.no_update, dash.no_update,
+                        dash.no_update, dash.no_update, dash.no_update,dash.no_update
+                            )
+
+            elif pressure_washer_state == True:
+
+                return (dash.no_update, dash.no_update, dash.no_update, dash.no_update, dash.no_update, True, dash.no_update,
+                            dash.no_update, dash.no_update, dash.no_update, dash.no_update, dash.no_update,
+                            dash.no_update,
+                            components_colors['Pressure Washer On State'][0],dash.no_update, dash.no_update, dash.no_update,
+                        dash.no_update, dash.no_update, dash.no_update,dash.no_update
+                            )
+
+        elif button_pressed == 'presoaking_button':
+
+            if presoaking_state == True:
+                    # presoaking pin off
+                return (False, dash.no_update, dash.no_update, dash.no_update, dash.no_update, dash.no_update,
+                            dash.no_update,dash.no_update, dash.no_update, dash.no_update, dash.no_update, dash.no_update, dash.no_update,
+                        dash.no_update,dash.no_update, dash.no_update, dash.no_update,
+                        dash.no_update, dash.no_update, dash.no_update,dash.no_update)
+
+            elif presoaking_state == False:
+                # presoaking pin on and the other 3 pins on top off
+                return (True, False, False, False, False, dash.no_update, dash.no_update,
+                            components_colors['Pre-Soak On State'][0], dash.no_update, dash.no_update, dash.no_update, dash.no_update,
+                            dash.no_update,
+                            dash.no_update,dash.no_update, dash.no_update, dash.no_update,
+                        dash.no_update, dash.no_update, dash.no_update,dash.no_update
+                            )
+
+
+        elif button_pressed == 'soap_button':
+
+            if soap_state == True:
+                    # soap pin off
+                return (dash.no_update, False, dash.no_update, dash.no_update, dash.no_update, dash.no_update,
+                            dash.no_update,dash.no_update, dash.no_update, dash.no_update, dash.no_update, dash.no_update, dash.no_update,
+                        dash.no_update,dash.no_update, dash.no_update, dash.no_update,
+                        dash.no_update, dash.no_update, dash.no_update,dash.no_update)
+
+            elif soap_state == False:
+                # soap pin on and the other 3 pins on top off
+                return (False, True, False, False, False, dash.no_update, dash.no_update,
+                            dash.no_update, components_colors['Soap On State'][0], dash.no_update, dash.no_update, dash.no_update,
+                            dash.no_update,
+                            dash.no_update,dash.no_update, dash.no_update, dash.no_update,
+                        dash.no_update, dash.no_update, dash.no_update,dash.no_update
+                            )
+
+
+        elif button_pressed == 'degreaser_button':
+
+            if degreaser_state == True:
+                    # degreaser pin off
+                return (dash.no_update, dash.no_update, False, dash.no_update, dash.no_update, dash.no_update,
+                            dash.no_update,dash.no_update, dash.no_update, dash.no_update, dash.no_update, dash.no_update, dash.no_update,
+                        dash.no_update,dash.no_update, dash.no_update, dash.no_update,
+                        dash.no_update, dash.no_update, dash.no_update,dash.no_update)
+
+            elif degreaser_state == False:
+                    # degreaser pin on and the other 3 pins on top off
+                return (False, False, True, False, False, dash.no_update, dash.no_update,
+                            dash.no_update, dash.no_update, components_colors['Degreaser On State'][0], dash.no_update, dash.no_update,
+                            dash.no_update,
+                            dash.no_update,dash.no_update, dash.no_update, dash.no_update,
+                        dash.no_update, dash.no_update, dash.no_update,dash.no_update
+                            )
+
+
+
+        elif button_pressed == 'rinse_button':
+
+            if rinse_state == True:
+                    # rinse pin off
+                return (dash.no_update, dash.no_update, dash.no_update, False, dash.no_update, dash.no_update,
+                            dash.no_update,dash.no_update, dash.no_update, dash.no_update, dash.no_update, dash.no_update, dash.no_update,
+                        dash.no_update,dash.no_update, dash.no_update, dash.no_update,
+                        dash.no_update, dash.no_update, dash.no_update,dash.no_update)
+
+            elif rinse_state == False:
+                    # rinse pin on and the other 3 pins on top off
+                return (False, False, False, True, False, dash.no_update, dash.no_update,
+                            dash.no_update, dash.no_update, dash.no_update,components_colors['Rinse On State'][0], dash.no_update,
+                            dash.no_update,
+                            dash.no_update,dash.no_update, dash.no_update, dash.no_update,
+                        dash.no_update, dash.no_update, dash.no_update,dash.no_update
+                            )
+
+        elif button_pressed == 'wax_button':
+
+            if wax_state == True:
+                    # wax pin off
+                return (dash.no_update, dash.no_update, dash.no_update, dash.no_update, False, dash.no_update,
+                            dash.no_update,dash.no_update, dash.no_update, dash.no_update, dash.no_update, dash.no_update, dash.no_update,
+                        dash.no_update,dash.no_update, dash.no_update, dash.no_update,
+                        dash.no_update, dash.no_update, dash.no_update,dash.no_update)
+
+            elif wax_state == False:
+                    # wax pin on and the other 3 pins on top off
+                return (False, False, False, False, True, dash.no_update, dash.no_update,
+                            dash.no_update, dash.no_update, dash.no_update, dash.no_update, components_colors['Wax On State'][0],
+                            dash.no_update,
+                            dash.no_update,dash.no_update, dash.no_update, dash.no_update,
+                        dash.no_update, dash.no_update, dash.no_update,dash.no_update
+                            )
+
+        elif button_pressed == 'heater_button':
+
+            if heater_state == True:
+                    # heater pin off
+                return (
+                    dash.no_update, dash.no_update, dash.no_update, dash.no_update, dash.no_update, dash.no_update,
+                    False,dash.no_update, dash.no_update, dash.no_update, dash.no_update, dash.no_update, dash.no_update,
+                        dash.no_update,dash.no_update, dash.no_update, dash.no_update,
+                        dash.no_update, dash.no_update, dash.no_update,dash.no_update)
+
+            elif heater_state == False:
+                    # heater pin on
+                return (
+                    dash.no_update, dash.no_update, dash.no_update, dash.no_update, dash.no_update, dash.no_update,
+                    True,dash.no_update, dash.no_update, dash.no_update, dash.no_update, dash.no_update, components_colors['Heater On State'][0],
+                        dash.no_update,dash.no_update, dash.no_update, dash.no_update,
+                        dash.no_update, dash.no_update, dash.no_update,dash.no_update)
+
+        else:
+            raise PreventUpdate
+
+
+#,Input('power_button','on')
+'''
+if system_mode!='editing':
+    @app.callback(Output('cycle_timer','value'),
+              [Input('timer_update','n_intervals'),Input('power_button', 'on')]
               )
-def update_gen_bar_chart(selected_countries,selected_resolution,selected_assets):
+    def update_timer(time_update,power_button):
+        global seconds , time_passed
+        if system_state== washing_state:
+            seconds = int(time.time() - start_time)
+            min,sec=divmod(seconds,60)
+            if len(str(min))==1:
+                min='0{}'.format(min)
 
+            if len(str(sec))==1:
+                sec='0{}'.format(sec)
 
-    with open("Gen_Type_20220209.pickle", "rb") as f:
-        object = pkl.load(f)
+            time_passed='{}:{}'.format(min,sec)
+            return time_passed
+        else:
+            return time_passed
+'''
+if system_mode =='editing':
 
+    @app.callback([Output('main_div', 'style'),Output('main_header', 'style'),Output('main_header_text','style'),Output('card1', 'style'),
+               Output('card2', 'style'),Output('card3', 'style'),Output('card4', 'style'),Output('card5', 'style'),
+               Output('card6', 'style'),Output('card7', 'style'),Output('card8', 'style'),
+               ],
+                  Input('apply_button', 'n_clicks'),
+                  [State('main_div','style'),State('main_header','style'),State('main_header_text','style'),State('card1', 'style'),
+                   State('card2', 'style'),State('card3', 'style'),State('card4', 'style'),State('card5', 'style'),
+                   State('card6', 'style'),State('card7', 'style'),State('card8', 'style'),
 
-    object_subset = {key: value for key, value in object.items() if selected_countries in key}
-    object=None
-
-    fig=go.Figure()
-
-    # dictionery for assets colors
-    assets_colors = {'Flexible Assets': 'indianred', 'Demand Shedding': 'skyblue', 'Curtailment': 'navy'}
-
-
-    country_assets=pd.Series(data=list(object_subset.keys()) ) # get names of assets dataframes from pickle dictionery keys
-    dfs_names=[]
-    # looping through selected assets from check boxes
-    for asset in selected_assets:
-        #################
-        # same as  stalked area chart logic except the part of bar chart scroll down to check it
-        if asset != 'Other/':
-            df_name=country_assets[country_assets.str.contains(asset)].values[0]
-            df=object_subset[df_name]
-
-            df.set_index('Date', inplace=True)
-            df.columns = ['1991', '1992', '1993', '1994', '1995', '1996', '1997',
-                          '1998', '1999', '2000', '2001', '2002', '2003', '2004',
-                          '2005', '2006', '2007', '2008', '2009', '2010', '2011',
-                          '2012', '2013', '2014', '2015', 'Normal']
-
-            graph_data = df.resample('3M').mean()
-
-            if selected_resolution == 'Mean Agg. Quarterly':
-                graph_data = df.resample('3M').mean()
-
-            elif selected_resolution == 'Sum Agg. Quarterly':
-                graph_data = df.resample('3M').sum()
-
-            elif selected_resolution == 'Mean Agg. Monthly':
-                graph_data = df.resample('1M').mean()
-
-            elif selected_resolution == 'Sum Agg. Monthly':
-                graph_data = df.resample('1M').sum()
-
-            elif selected_resolution == 'Mean Agg. Daily':
-                graph_data = df.resample('1D').mean()
-
-            elif selected_resolution == 'Sum Agg. Daily':
-                graph_data = df.resample('1D').sum()
-
-            elif selected_resolution == 'Hourly':
-                graph_data = df
-
-            # plotly bar chart src : https://plotly.com/python/bar-charts/
-            fig.add_trace( go.Bar(name=asset, x=graph_data.index, y=graph_data['Normal'].astype('int64'),
-               marker_color=assets_colors[asset])
-
-
-
+                   State('components_menu','value'),State('color_picker','value')]
             )
+    def update_background_colors(clicks,main_div,main_header,main_header_text,card1,card2,card3,card4,card5,card6,card7,
+                             card8,component,color_picked):
+        global  df , components_colors
+        ctx = dash.callback_context
+        if not ctx.triggered:
+            df_colors = pd.read_csv(csv_file)
+            colors_dict = df_colors.to_dict('list')
+            main_div['backgroundColor']=colors_dict['Main Background'][0]
+            main_header['backgroundColor']=colors_dict['Header Background'][0]
+            main_header_text['color']=colors_dict['Main Header Text'][0]
+            card1['backgroundColor']=colors_dict['Containers Background'][0]
+            card2['backgroundColor']=colors_dict['Containers Background'][0]
+            card3['backgroundColor']=colors_dict['Containers Background'][0]
+            card4['backgroundColor']=colors_dict['Containers Background'][0]
+            card5['backgroundColor']=colors_dict['Containers Background'][0]
+            card6['backgroundColor']=colors_dict['Containers Background'][0]
+            card7['backgroundColor']=colors_dict['Containers Background'][0]
+            card8['backgroundColor']=colors_dict['Containers Background'][0]
+            return (main_div,main_header,main_header_text,card1,card2,card3,card4,card5,card6,card7,card8)
 
-    object_subset=None
+        if component=='Main Background':
+            components_colors['Main Background'][0] = color_picked['hex']
+            df = pd.DataFrame(components_colors)
+            df.to_csv(csv_file,index=False)
+            main_div['backgroundColor']=color_picked['hex']
+            return (main_div,dash.no_update,dash.no_update,dash.no_update,dash.no_update,dash.no_update,dash.no_update,
+                dash.no_update,dash.no_update,dash.no_update,dash.no_update)
 
-    fig.update_layout(
-        title='Power Produced By Balancing Assets', xaxis_title='Date',
-        yaxis_title='MWh',
-        font=dict(size=14, family='Arial', color='white'), hoverlabel=dict(
-            font_size=14, font_family="Rockwell", font_color='white', bgcolor='#20374c'), plot_bgcolor='#20374c',
-        paper_bgcolor='#20374c' ,margin=dict(l=0, r=0, t=40, b=0) ,barmode='stack'
+        elif component=='Header Background':
+            components_colors['Header Background'][0] = color_picked['hex']
+            df = pd.DataFrame(components_colors)
+            df.to_csv(csv_file,index=False)
+            main_header['backgroundColor']=color_picked['hex']
+            return (dash.no_update,main_header,dash.no_update,dash.no_update,dash.no_update,dash.no_update,dash.no_update,
+                dash.no_update,dash.no_update,dash.no_update,dash.no_update)
 
-    )
-#boundaries
-    # 0f2537
+        elif component=='Main Header Text':
+            components_colors['Main Header Text'][0] = color_picked['hex']
+            df = pd.DataFrame(components_colors)
+            df.to_csv(csv_file,index=False)
+            main_header_text['color']=color_picked['hex']
+            return (dash.no_update,dash.no_update,main_header_text,dash.no_update,dash.no_update,dash.no_update,dash.no_update,
+                dash.no_update,dash.no_update,dash.no_update,dash.no_update)
 
-    fig.update_xaxes(showgrid=False, showline=True, zeroline=False)
-    fig.update_yaxes(showgrid=False, showline=True, zeroline=False)
-
-    return fig
-
-
-# facilities pie chart
-# inputs are country and years slider
-# output is figure
-
-
-@app.callback(Output('pie_chart','figure'),
-               [Input('pie_country_menu','value'),Input('pie_slider','value')]
-,prevent_initial_call=True
-              )
-def update_pie_chart(selected_countries,years_range):
-
-    # facilities list to be used
-
-    facilities=['Biofuels', 'CHP', 'Coal', 'CH4', 'Hydro', 'Lignite', 'Nuc', 'Oil',
-                       'Other/', 'Pump', 'Res', 'RoR', 'Solar', 'Wind']
-
-    with open("Gen_Type_20220209.pickle", "rb") as f:
-        object = pkl.load(f)
-
-
-    object_subset = {key: value for key, value in object.items() if selected_countries in key}
-    object=None
-
-    fig=go.Figure()
-    colors = px.colors.qualitative.Light24
-    colors[0]='lightsalmon'
-    colors.extend(['#d5f4e6','#80ced6','#c83349'])
-
-    ######## very important : same dictionery was used in stalked area chart colors so that both colors in 2 graphs be consistant to be able to get insights easier
-    fac_colors = {'Solar': colors[0], 'CHP': colors[1], 'Coal': colors[2], 'CH4': colors[3],
-                      'Hydro': colors[4], 'Lignite': colors[5], 'Nuc': colors[6], 'Oil': colors[7],
-                      'Other/': colors[8], 'Pump': colors[9],'Res': colors[10],'RoR': colors[11],'Biofuels': colors[14]
-                      ,'Wind': colors[25]}
-
-
-    country_facilities=pd.Series(data=list(object_subset.keys()) )
-    pie_values=[]
-    pie_labels=[]
-    for fac in facilities:
-        if fac !='Other/':
-            df_name=country_facilities[country_facilities.str.contains(fac)].values[0]
-            df=object_subset[df_name]
-
-            df = df[(df['Date'].dt.year >= years_range[0]) & (df['Date'].dt.year <= years_range[1])]
-
-            df.set_index('Date', inplace=True)
-            df.columns = ['1991', '1992', '1993', '1994', '1995', '1996', '1997',
-                          '1998', '1999', '2000', '2001', '2002', '2003', '2004',
-                          '2005', '2006', '2007', '2008', '2009', '2010', '2011',
-                          '2012', '2013', '2014', '2015', 'Normal']
-
-            sum_power = df['Normal'].sum() # getting sum of power of corresponding facility
-
-            # appending the facility sum power and name to be used as percentages values and labels in pie chart
-            if sum_power!=0:
-                pie_values.append(sum_power)
-                fac_name=fac.replace('/','')
-                pie_labels.append(fac_name)
+        elif component=='Containers Background':
+            components_colors['Containers Background'][0] = color_picked['hex']
+            df = pd.DataFrame(components_colors)
+            df.to_csv(csv_file,index=False)
+            card1['backgroundColor']=color_picked['hex']
+            card2['backgroundColor']=color_picked['hex']
+            card3['backgroundColor']=color_picked['hex']
+            card4['backgroundColor']=color_picked['hex']
+            card5['backgroundColor']=color_picked['hex']
+            card6['backgroundColor']=color_picked['hex']
+            card7['backgroundColor']=color_picked['hex']
+            card8['backgroundColor']=color_picked['hex']
+            return ( dash.no_update,dash.no_update,dash.no_update,card1,card2,card3,card4,card5,card6,card7,card8 )
 
         else:
-            other_names=country_facilities[country_facilities.str.contains(fac)]
+            raise PreventUpdate
 
-            other_sum=0 # initialize sum of other facilities
-            # loop through facilities conatains other and calculate sum power
-            for name in other_names:
-                df=object_subset[name]
-                ndf=df[(df['Date'].dt.year >= years_range[0]) & (df['Date'].dt.year <= years_range[1])]
-                new_sum=df.iloc[:, 25].sum()
-                other_sum=other_sum+new_sum
+    @app.callback(Output('color_picker', 'value'),
+                  Input('default_button','n_clicks'),
+                  [State('components_menu','value')]
+                  ,prevent_initial_call=True)
+    def default_color(default_button,component):
+        if component=='Contact Info Text':
+            with open('contact_info.json', 'r') as openfile:
+                # Reading from json file
+                contact_info_dict = json.load(openfile)
+            return dict(hex=contact_info_dict['default_color'])
 
-            if other_sum!=0:
-                pie_values.append(other_sum)
-                fac_name=fac.replace('/','')
-                pie_labels.append(fac_name)
+        df_colors=pd.read_csv(csv_file)
+        colors_dict=df_colors.to_dict('list')
+        colors_dict[component][0]=colors_dict[component][1]
+        df_colors=pd.DataFrame(colors_dict)
+        df_colors.to_csv(csv_file,index=False)
+        return dict(hex=colors_dict[component][1])
 
-    # adding the pie chart facilities colors to be the same as fac_colors dictionery
-    pie_colors=[]
-    for label in pie_labels:
-        if label=='Other':
-            pie_colors.append(fac_colors['Other/'])
+# presoaking_indicator_div soap_indicator_div degreaser_indicator_div  rinse_indicator_div wax_indicator_div heater_indicator_div power_button_div
+
+    @app.callback([Output('presoaking_indicator_div', 'children'), Output('soap_indicator_div', 'children'),
+               Output('degreaser_indicator_div', 'children'),Output('rinse_indicator_div', 'children'),
+               Output('wax_indicator_div', 'children'),Output('heater_indicator_div', 'children'),
+               Output('power_button_div', 'children'),
+               ],
+                  Input('apply_button', 'n_clicks'),
+                  [State('components_menu','value'),State('color_picker','value')]
+                    )
+    def update_themes(clicks,component,color_picked):
+        global leds_theme ,df , components_colors , power_button_theme
+
+        ctx = dash.callback_context
+        if not ctx.triggered:
+            df_colors = pd.read_csv(csv_file)
+            colors_dict = df_colors.to_dict('list')
+            leds_theme['secondary']=colors_dict['Leds Off State'][0]
+            power_button_theme['secondary']=colors_dict['Pressure Washer Off State'][0]
+            return (daq.DarkThemeProvider(theme=leds_theme, children=presoaking_indicator),
+                daq.DarkThemeProvider(theme=leds_theme, children=soap_indicator),
+                daq.DarkThemeProvider(theme=leds_theme, children=degreaser_indicator),
+                daq.DarkThemeProvider(theme=leds_theme, children=rinse_indicator),
+                daq.DarkThemeProvider(theme=leds_theme, children=wax_indicator),
+                daq.DarkThemeProvider(theme=leds_theme, children=heater_indicator),
+                daq.DarkThemeProvider(theme=power_button_theme, children=power_button)
+                )
+
+        if component=='Leds Off State':
+            leds_theme['secondary']=color_picked['hex']
+            components_colors['Leds Off State'][0] = color_picked['hex']
+            df = pd.DataFrame(components_colors)
+            df.to_csv(csv_file,index=False)
+            return (daq.DarkThemeProvider(theme=leds_theme, children=presoaking_indicator),
+                daq.DarkThemeProvider(theme=leds_theme, children=soap_indicator),
+                daq.DarkThemeProvider(theme=leds_theme, children=degreaser_indicator),
+                daq.DarkThemeProvider(theme=leds_theme, children=rinse_indicator),
+                daq.DarkThemeProvider(theme=leds_theme, children=wax_indicator),
+                daq.DarkThemeProvider(theme=leds_theme, children=heater_indicator),
+                dash.no_update
+                )
+
+        elif component=='Pressure Washer Off State':
+            power_button_theme['secondary']=color_picked['hex']
+            components_colors['Pressure Washer Off State'][0] = color_picked['hex']
+            df = pd.DataFrame(components_colors)
+            df.to_csv(csv_file,index=False)
+            return (dash.no_update,dash.no_update,dash.no_update,dash.no_update,dash.no_update,dash.no_update,
+                daq.DarkThemeProvider(theme=power_button_theme, children=power_button)
+                )
+
         else:
-            pie_colors.append(fac_colors[label])
+            raise PreventUpdate
 
-    # plotly pie chart src : https://plotly.com/python/pie-charts/
-    fig = go.Figure(data=go.Pie(labels=pie_labels, values=pie_values ))
-    fig.update_traces(hoverinfo='label+percent', textinfo='label+percent', textfont_size=14, textfont_family='Arial' ,
-                      marker=dict(colors=pie_colors, line=dict(color='#0f2937')))
+    @app.callback([Output('presoaking_button', 'style'),Output('soap_button', 'style'),Output('degreaser_button', 'style'),
+               Output('rinse_button', 'style'),Output('wax_button', 'style'),Output('heater_button', 'style')
+               ],
+                  Input('apply_button', 'n_clicks'),
+                  [State('presoaking_button', 'style'),State('soap_button', 'style'),State('degreaser_button', 'style'),
+               State('rinse_button', 'style'),State('wax_button', 'style'),State('heater_button', 'style'),
+                   State('components_menu','value'),State('color_picker','value')]
+            )
+    def update_buttons(clicks,presoaking_button,soap_button,degreaser_button,rinse_button,wax_button,heater_button,component,color_picked):
+        global df, components_colors
+        ctx = dash.callback_context
+        if not ctx.triggered:
+            df_colors = pd.read_csv(csv_file)
+            colors_dict = df_colors.to_dict('list')
+            presoaking_button['backgroundColor'] = colors_dict['Buttons'][0]
+            soap_button['backgroundColor'] = colors_dict['Buttons'][0]
+            degreaser_button['backgroundColor'] = colors_dict['Buttons'][0]
+            rinse_button['backgroundColor'] = colors_dict['Buttons'][0]
+            wax_button['backgroundColor'] = colors_dict['Buttons'][0]
+            heater_button['backgroundColor'] = colors_dict['Buttons'][0]
+            presoaking_button['color'] = colors_dict['Buttons Text'][0]
+            soap_button['color'] = colors_dict['Buttons Text'][0]
+            degreaser_button['color'] = colors_dict['Buttons Text'][0]
+            rinse_button['color'] = colors_dict['Buttons Text'][0]
+            wax_button['color'] = colors_dict['Buttons Text'][0]
+            heater_button['color'] = colors_dict['Buttons Text'][0]
+            return (presoaking_button, soap_button, degreaser_button, rinse_button, wax_button, heater_button)
 
+        if component == 'Buttons':
+            components_colors['Buttons'][0] = color_picked['hex']
+            df = pd.DataFrame(components_colors)
+            df.to_csv(csv_file, index=False)
+            presoaking_button['backgroundColor'] = color_picked['hex']
+            soap_button['backgroundColor'] = color_picked['hex']
+            degreaser_button['backgroundColor'] =color_picked['hex']
+            rinse_button['backgroundColor'] = color_picked['hex']
+            wax_button['backgroundColor'] = color_picked['hex']
+            heater_button['backgroundColor'] = color_picked['hex']
+            return (presoaking_button, soap_button, degreaser_button, rinse_button, wax_button, heater_button)
 
-    fig.update_layout(
-        title='Percentages of Facilities power produced',
-        font=dict(size=14, family='Arial', color='white'), hoverlabel=dict(
-            font_size=14, font_family="Rockwell", font_color='white', bgcolor='#20374c'), plot_bgcolor='#20374c',
-        paper_bgcolor='#20374c' ,margin=dict(l=0, r=0, t=40, b=0)
+        elif component == 'Buttons Text':
+            components_colors['Buttons Text'][0] = color_picked['hex']
+            df = pd.DataFrame(components_colors)
+            df.to_csv(csv_file, index=False)
+            presoaking_button['color'] = color_picked['hex']
+            soap_button['color'] = color_picked['hex']
+            degreaser_button['color'] = color_picked['hex']
+            rinse_button['color'] = color_picked['hex']
+            wax_button['color'] = color_picked['hex']
+            heater_button['color'] = color_picked['hex']
+            return (presoaking_button, soap_button, degreaser_button, rinse_button, wax_button, heater_button)
 
-    )
-    return fig
+        else:
+            raise PreventUpdate
 
+# cycle_timer color backgroundColor label
+# dict(label="Cycle Timer",style=dict(color=components_colors['Containers Label'][0],fontWeight='bold'))
+    @app.callback([Output('cycle_timer','color'),Output('cycle_timer','backgroundColor'),Output('cycle_timer','label')],
+              Input('apply_button', 'n_clicks'),
+              [State('components_menu','value'),State('color_picker','value')]
 
-
-############## same as update_price_line_chart , the difference is in components names and values only
-
-
-@app.callback([Output('price_line_chart','figure'),Output('price_data','data')],
-               [Input('price_country_menu','value'),Input('price_resolution_menu','value'),Input('price_scenarios_list','value')]
               )
-def update_price_line_chart(selected_countries,selected_resolution,selected_scenarios):
-    with open("PowerPrice_20220208.pickle", "rb") as f:
-        object = pkl.load(f)
-   # countries = list(object.keys())
-    df = object['{}'.format(selected_countries)]
-    object=None
-    df.set_index('Date', inplace=True)
-    df.columns=['1991', '1992', '1993', '1994', '1995', '1996', '1997',
-            '1998', '1999', '2000', '2001', '2002', '2003', '2004',
-            '2005', '2006', '2007', '2008', '2009', '2010', '2011',
-            '2012', '2013', '2014', '2015', 'Normal']
+    def update_timer(clicks,component,color_picked):
+        global df, components_colors
+        df_colors = pd.read_csv(csv_file)
+        colors_dict = df_colors.to_dict('list')
+        ctx = dash.callback_context
+        if not ctx.triggered:
+            return (colors_dict['Timer Numbers'][0],colors_dict['Timer Background'][0],
+                dict(label="Cycle Timer",style=dict(color=colors_dict['Containers Label'][0],fontWeight='bold')))
 
-    df['Exp']=df.iloc[: , :-1].mean(axis=1)
-    graph_data =df.resample('3M').mean()
+        if component=='Timer Numbers':
+            components_colors['Timer Numbers'][0] = color_picked['hex']
+            df = pd.DataFrame(components_colors)
+            df.to_csv(csv_file, index=False)
+            return (color_picked['hex'],dash.no_update,dash.no_update)
 
-    graph_data =df.resample('3M').mean()
-    if selected_resolution == 'Mean Agg. Quarterly':
-        graph_data=df.resample('3M').mean()
+        elif component=='Timer Background':
+            components_colors['Timer Background'][0] = color_picked['hex']
+            df = pd.DataFrame(components_colors)
+            df.to_csv(csv_file, index=False)
+            return (dash.no_update,color_picked['hex'],dash.no_update)
 
-    elif selected_resolution == 'Sum Agg. Quarterly':
-        graph_data=df.resample('3M').sum()
+        elif component=='Containers Label':
+            components_colors['Containers Label'][0] = color_picked['hex']
+            df = pd.DataFrame(components_colors)
+            df.to_csv(csv_file, index=False)
+            return (dash.no_update,dash.no_update,
+                dict(label="Cycle Timer",style=dict(color=color_picked['hex'],fontWeight='bold')))
 
-    elif selected_resolution == 'Mean Agg. Monthly':
-        graph_data=df.resample('1M').mean()
-
-    elif selected_resolution == 'Sum Agg. Monthly':
-        graph_data=df.resample('1M').sum()
-
-    elif selected_resolution == 'Mean Agg. Daily':
-        graph_data=df.resample('1D').mean()
-
-    elif selected_resolution == 'Sum Agg. Daily':
-        graph_data=df.resample('1D').sum()
-
-    elif selected_resolution== 'Hourly':
-        graph_data=df
-
-    fig=go.Figure()
-    colors = px.colors.qualitative.Light24
-    colors[0]='lightsalmon'
-    colors.extend(['#d5f4e6','#80ced6','#c83349'])
-    scenarios_colors = {'1991': colors[0], '1992': colors[1], '1993': colors[2], '1994': colors[3],
-                      '1995': colors[4], '1996': colors[5], '1997': colors[6], '1998': colors[7],
-                      '1999': colors[8], '2000': colors[9],'2001': colors[10],'2002': colors[11],'2003': colors[12]
-                        ,'2004': colors[13],'2005': colors[14],'2006': colors[15],'2007': colors[16],'2008': colors[17],
-                        '2009': colors[18],'2010': colors[19],'2011': colors[20],'2012': colors[21],'2013': colors[22],
-                        '2014': colors[23],'2015': colors[24],'Normal': colors[25],'Exp':colors[26]}
-    i=0
-    for scenario in selected_scenarios:
-        fig.add_trace(go.Scatter(x=graph_data.index, y=graph_data[scenario].astype('int64'), mode='lines', name=scenario,
-                                 marker_color=scenarios_colors[scenario]
-                                 ))
-        i+=1
+        else:
+            raise PreventUpdate
 
 
-    fig.update_layout(
-        title='Power Price', xaxis_title='Date', yaxis_title='€/MWh',
-        font=dict(size=14, family='Arial', color='white'), hoverlabel=dict(
-            font_size=16, font_family="Rockwell", font_color='white', bgcolor='#20374c'), plot_bgcolor='#20374c',
-        paper_bgcolor='#20374c',
-        xaxis=dict(
+    # html.Img(src='data:image/jpg;base64,{}'.format(encoded.decode()), id='logo_img', height='',width='',className='mylogo',
+    #                   style=dict(marginLeft='')) logo_img_div
+    @app.callback(Output('logo_img_div', 'children'),
+                  Input('upload_img', 'contents'),
+                  State('upload_img', 'filename'),
+                  prevent_initial_call=True)
+    def update_logo(list_of_contents, filename):
+        logo=''
 
-            tickwidth=2, tickcolor='#80ced6',
-            ticks="outside",
-            tickson="labels",
-            rangeslider_visible=False
-        )
-    )
-#boundaries
-    # 0f2537
+        try:
+            if ('jbg' in filename) or ('jpeg' in filename ) or ('png' in filename) or ('svg' in filename):
+                logo=  html.Img(src=list_of_contents, id='logo_img',className='mylogo',
+                       )
+                img_dict={'content':list_of_contents}
+                with open(logo_file, "w") as outfile:
+                    json.dump(img_dict, outfile)
+        except :
+            return (html.Div([
+                'There was an error processing this file.',
+            ],style=dict(fontSize='2vh',fontWeight='bold',color='red',textAlign='center')) )
 
-    fig.update_xaxes(showgrid=False, showline=True, zeroline=False)
-    fig.update_yaxes(showgrid=False, showline=True, zeroline=False)
-    graph_data['Date']=graph_data.index
-    selected_scenarios.append('Date')
-    return (fig , graph_data[selected_scenarios].to_dict('records'))
-
-
-
-############## same as update_price_line_chart , the difference is in components names and values and there is no check boxes here
+        return logo
 
 
+    # apply_button2 default_button2 contact_info_text textera
 
-@app.callback([Output('cap_line_chart','figure'),Output('cap_data','data')],
-               [Input('cap_country_menu','value'),Input('cap_resolution_menu','value')]
-              )
-def update_cap_line_chart(selected_countries,selected_resolution):
-    with open("TransmissionCap_20220208.pickle", "rb") as f:
-        object = pkl.load(f)
-   # countries = list(object.keys())
-    df = object['{}'.format(selected_countries)]
-    object=None
-    df.set_index('Date', inplace=True)
-    df.columns=['1991', '1992', '1993', '1994', '1995', '1996', '1997',
-            '1998', '1999', '2000', '2001', '2002', '2003', '2004',
-            '2005', '2006', '2007', '2008', '2009', '2010', '2011',
-            '2012', '2013', '2014', '2015', 'Normal']
+    @app.callback([Output('contact_info_text','children'),Output('contact_info_text','style')],
+                  [Input('apply_button', 'n_clicks'),Input('apply_button2', 'n_clicks') ],
+                  [State('textera','value'),State('contact_info_text','style'),State('contact_info_text','children'),
+                   State('components_menu','value'),State('color_picker','value')]
+                  )
+    def update_contact_info(apply_button,apply_button2,textera,contact_info_style,contact_info_text,component,color_picked):
+        global contact_info_dict
+        ctx = dash.callback_context
+        if not ctx.triggered:
+            contact_info_style['color']=contact_info_dict['color']
+            return (contact_info_dict['text'],contact_info_style)
 
-    graph_data =df.resample('3M').mean()
-    if selected_resolution == 'Mean Agg. Quarterly':
-        graph_data=df.resample('3M').mean()
+        button_pressed = ctx.triggered[0]['prop_id'].split('.')[0]
 
-    elif selected_resolution == 'Sum Agg. Quarterly':
-        graph_data=df.resample('3M').sum()
+        if button_pressed == 'apply_button':
+            if component=='Contact Info Text':
+                contact_info_dict['color']=color_picked['hex']
+                with open(contact_file, "w") as outfile:
+                    json.dump(contact_info_dict, outfile)
 
-    elif selected_resolution == 'Mean Agg. Monthly':
-        graph_data=df.resample('1M').mean()
+                contact_info_style['color']=color_picked['hex']
+                return (dash.no_update,contact_info_style)
 
-    elif selected_resolution == 'Sum Agg. Monthly':
-        graph_data=df.resample('1M').sum()
+            else:
+                raise PreventUpdate
 
-    elif selected_resolution == 'Mean Agg. Daily':
-        graph_data=df.resample('1D').mean()
+        elif button_pressed=='apply_button2':
+            contact_info_dict['text']=textera
+            with open(contact_file, "w") as outfile:
+                json.dump(contact_info_dict, outfile)
 
-    elif selected_resolution == 'Sum Agg. Daily':
-        graph_data=df.resample('1D').sum()
-
-    elif selected_resolution== 'Hourly':
-        graph_data=df
-
-    fig=go.Figure()
+            return (textera, dash.no_update)
 
 
-    fig.add_trace(go.Scatter(x=graph_data.index, y=graph_data['Normal'].astype('int64'), mode='lines', name='Normal',
-                                 marker_color='#80ced6' , showlegend=True
-                                 ))
+    @app.callback(Output('textera','value'),
+                  Input('default_button2', 'n_clicks')
+                  ,prevent_initial_call=True)
+    def default_contact_text(default_button2):
+        with open(contact_file, 'r') as openfile:
+            # Reading from json file
+            contact_info_dict = json.load(openfile)
+        return contact_info_dict['default_text']
 
 
-
-    fig.update_layout(
-        title='Power Capacity', xaxis_title='Date', yaxis_title='MW',
-        font=dict(size=14, family='Arial', color='white'), hoverlabel=dict(
-            font_size=16, font_family="Rockwell", font_color='white', bgcolor='#20374c'), plot_bgcolor='#20374c',
-        paper_bgcolor='#20374c',
-        xaxis=dict(
-
-            tickwidth=2, tickcolor='#80ced6',
-            ticks="outside",
-            tickson="labels",
-            rangeslider_visible=False
-        )
-    )
-#boundaries
-    # 0f2537
-
-    fig.update_xaxes(showgrid=False, showline=True, zeroline=False)
-    fig.update_yaxes(showgrid=False, showline=True, zeroline=False)
-    graph_data['Date']=graph_data.index
-
-    return (fig , graph_data.to_dict('records'))
-
-
-
-# callback to download the figure csv data in your device
-# input is download button and output is dash download component that handles the download process
-
-@app.callback(Output('flow_csv_download_data', 'data'),
-              Input('flow_download_csv', 'n_clicks'),State('flow_data','data')
-
-    ,prevent_initial_call=True)
-def download_flow_csv(clicks,flow_data):
-    flow_df=pd.DataFrame(flow_data) # get the dataframe from the json data stored in dcc.Store() component
-    return send_data_frame(flow_df.to_csv, "flow_data.csv") # send_data_frame() function integerate with dash download component
-
-
-@app.callback(Output('price_csv_download_data', 'data'),
-              Input('price_download_csv', 'n_clicks'),State('price_data','data')
-
-    ,prevent_initial_call=True)
-def download_flow_csv(clicks,price_data):
-    price_df=pd.DataFrame(price_data)
-    return send_data_frame(price_df.to_csv, "price_data.csv")
-
-@app.callback(Output('cap_csv_download_data', 'data'),
-              Input('cap_download_csv', 'n_clicks'),State('cap_data','data')
-
-    ,prevent_initial_call=True)
-def download_cap_csv(clicks,cap_data):
-    cap_df=pd.DataFrame(cap_data)
-    return send_data_frame(cap_df.to_csv, "cap_data.csv")
-
-
-# updating capacity page map
-# input is the map slider and output is map figure
-
-@app.callback(Output('capacity_map', 'figure'),
-              Input('cap_map_slider', 'value'))
-def update_cap_map(years_range):
-    with open("TransmissionCap_20220208.pickle", "rb") as f:
-        object = pkl.load(f)
-    map_fig=capacity_page.create_cap_map(object, years_range) # using the function that return map figure from the capacity page
-    return map_fig
-
-########### same
-@app.callback(Output('net_flow_map', 'figure'),
-              Input('net_flow_map_slider', 'value'))
-def update_flow_map(years_range):
-    with open("Flow_20220208.pickle", "rb") as f:
-        object = pkl.load(f)
-    map_fig=net_import.create_net_flow_map(object, years_range)
-    return map_fig
-
-########### same
-@app.callback(Output('net_imp_map', 'figure'),
-              Input('net_imp_map_slider', 'value'))
-def update_net_map(years_range):
-    with open("NetImport_20220208.pickle", "rb") as f:
-        object = pkl.load(f)
-    map_fig=net_import.create_net_import_map(object, years_range)
-    return map_fig
-
-# updating flow page bar chart
-# input is the  slider and output is bar figure
-@app.callback(Output('flow_bar_chart', 'figure'),
-              Input('flow_bar_slider', 'value'))
-def update_flow_bar(years_range):
-    with open("Flow_20220208.pickle", "rb") as f:
-        object = pkl.load(f)
-    bar_fig=flow_page.create_flow_bar_fig(object,years_range)
-    return bar_fig
-
-########### same
-@app.callback(Output('price_bar_chart', 'figure'),
-              Input('price_bar_slider', 'value'))
-def update_price_bar(years_range):
-    with open("PowerPrice_20220208.pickle", "rb") as f:
-        object = pkl.load(f)
-    bar_fig=price_page.create_price_bar_fig(object,years_range)
-    return bar_fig
-
-
-
+'''
+contact_dict = {'text': 'Custom Pressure Wash System by Bruce contact for information or support, email bruce@knevitt.com',
+                'color':'indianred'}
+with open("contact_info.json", "w") as outfile:
+    json.dump(contact_dict, outfile)
+'''
 if __name__ == '__main__':
-    app.run_server(host='localhost',port=8050,debug=False,dev_tools_silence_routes_logging=True)
+    app.run_server(host='localhost',port=8050,debug=True,dev_tools_silence_routes_logging=True)
+
+
+
+
+
+
+
+
+
+
